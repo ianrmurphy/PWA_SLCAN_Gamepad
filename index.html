@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#111827" />
+
+    <title>Basic Offline PWA</title>
+
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
+      .card { max-width: 520px; padding: 1rem 1.25rem; border: 1px solid #e5e7eb; border-radius: 12px; }
+      button { padding: .5rem .75rem; border-radius: 10px; border: 1px solid #d1d5db; background: white; cursor: pointer; }
+      button:active { transform: translateY(1px); }
+      input, select { width: 100%; padding: .5rem .75rem; border-radius: 10px; border: 1px solid #d1d5db; }
+      .row { display: flex; gap: .5rem; align-items: center; margin: .75rem 0; }
+      .muted { color: #6b7280; font-size: .9rem; }
+      code { background: #f3f4f6; padding: .1rem .25rem; border-radius: 6px; }
+      .ok { color: #065f46; }
+      .warn { color: #92400e; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Basic Offline PWA</h1>
+      <p class="muted">
+        Load once online, then turn off internet and refresh.
+        The app should still work (offline cache).
+      </p>
+
+      <div class="row">
+        <button id="dec">-</button>
+        <strong>Count: <span id="count">0</span></strong>
+        <button id="inc">+</button>
+        <button id="reset" style="margin-left:auto;">Reset</button>
+      </div>
+
+      <label class="muted" for="note">A note saved locally:</label>
+      <div class="row">
+        <input id="note" placeholder="Type something, refresh, go offline..." />
+      </div>
+
+      <div class="row">
+        <button id="install" hidden>Install App</button>
+        <span class="muted">Install: <code id="installState">checking...</code></span>
+      </div>
+
+      <hr />
+      <h2>SLCAN Bridge</h2>
+      <p class="muted">
+        Connect a USB serial SLCAN adapter. The app sends a CAN frame for each
+        gamepad connect/disconnect and control change event.
+      </p>
+
+      <div class="row">
+        <label class="muted" for="canId" style="min-width: 5rem;">CAN ID</label>
+        <input id="canId" value="123" maxlength="3" />
+      </div>
+
+      <div class="row">
+        <label class="muted" for="slcanBitrate" style="min-width: 5rem;">Bitrate</label>
+        <select id="slcanBitrate">
+          <option value="0">10 kbps (S0)</option>
+          <option value="1">20 kbps (S1)</option>
+          <option value="2">50 kbps (S2)</option>
+          <option value="3">100 kbps (S3)</option>
+          <option value="4" selected>125 kbps (S4)</option>
+          <option value="5">250 kbps (S5)</option>
+          <option value="6">500 kbps (S6)</option>
+          <option value="7">800 kbps (S7)</option>
+          <option value="8">1 Mbps (S8)</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <button id="serialConnect">Connect SLCAN</button>
+        <button id="serialDisconnect" disabled>Disconnect</button>
+      </div>
+      <p class="muted">
+        Serial: <code id="serialState">not connected</code> &bull;
+        Gamepad: <code id="gamepadState">waiting</code>
+      </p>
+
+      <p id="status" class="muted"></p>
+      <p class="muted">
+        Service worker: <code id="swState">checking...</code> &bull;
+        Network: <code id="netState">checking...</code>
+      </p>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
