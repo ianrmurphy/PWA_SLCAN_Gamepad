@@ -5,104 +5,203 @@ Last updated: February 27, 2026
 ## Project Summary
 - This repo is a static browser app (no build step, no framework).
 - It is a dedicated gamepad-to-CAN bridge over WebSerial + SLCAN.
-- Main files:
-  - `index.html`
-  - `config.js`
-  - `state-machine.js`
-  - `app.js`
-  - `README.md`
+- The app currently:
+  - polls the HTML5 Gamepad API,
+  - runs a periodic state machine,
+  - transmits 4 periodic CAN frames over SLCAN,
+  - monitors one configured incoming CAN ID and displays the payload.
 
-## Current Scope
-- Uses WebSerial to connect to an SLCAN serial adapter.
-- Uses Gamepad API polling (`navigator.getGamepads()` in `requestAnimationFrame`).
-- Runs an asynchronous periodic state machine loop.
-- Runs asynchronous periodic CAN transmit loops from config.
-- Uses latest gamepad-derived payload as the base CAN payload.
-- State-machine development logic now lives in `state-machine.js`.
+## Main Files
+- `index.html`
+  - Presentation only.
+  - Defines controls and status fields.
+  - Loads scripts in this order:
+    1. `config.js`
+    2. `globals.js`
+    3. `can-encoding.js`
+    4. `state-machine.js`
+    5. `app.js`
+- `config.js`
+  - Editable runtime configuration (`window.APP_CONFIG`).
+  - Holds CAN TX schedule, CAN RX filter, and state-machine settings.
+- `globals.js`
+  - Shared mutable application data (`window.AppGlobals`).
+  - Makes the main cross-file data dependencies explicit.
+- `can-encoding.js`
+  - Dedicated CAN packing/parsing layer.
+  - Owns the shared data variables that are packed into outgoing CAN frames.
+  - Packs outgoing SLCAN data frames from globals.
+  - Parses incoming SLCAN data frames into globals.
+- `state-machine.js`
+  - Dedicated state-machine module.
+  - Parses state-machine config.
+  - Owns state enum/sequence handling.
+  - Runs the async state-machine loop.
+  - Consumes example received globals.
+  - Exposes `window.AppStateMachine.create(...)`.
+- `app.js`
+  - Main orchestration/runtime.
+  - Owns WebSerial TX/RX, serial queueing, gamepad polling, CAN TX scheduling, and UI updates.
+- `README.md`
+  - High-level usage notes.
+
+## Shared Global Data
+- `globals.js` defines `window.AppGlobals`.
+- Top-level sections:
+  - `stateMachineData`
+  - `gamepadData`
+  - `receivedData`
+
+### stateMachineData
+- Values written by `state-machine.js`.
+- Values packed into outgoing CAN frames by `can-encoding.js`.
+- Current fields:
+  - `stateName`
+  - `stateValue`
+
+### gamepadData
+- Values written by `app.js` through `window.CanEncoding.updateGamepadData(...)`.
+- Values packed into outgoing CAN frames by `can-encoding.js`.
+- Current fields:
+  - `eventType`
+  - `gamepadIndex`
+  - `controlIndex`
+  - `data0`
+  - `data1`
+  - `data2`
+  - `data3`
+
+### receivedData
+- Values written by `can-encoding.js` when a matching RX frame is parsed.
+- Values read by `state-machine.js`.
+- Current fields:
+  - `matchedId`
+  - `lastPayloadBytes`
+  - `lastTimestamp`
+  - `lastDisplayText`
+  - `exampleRemoteAdvanceRequest`
+  - `exampleRemoteModeRequest`
+  - `exampleRemoteSetpoint`
+  - `exampleRemoteFlags`
 
 ## Config File
 - `config.js` defines `window.APP_CONFIG`.
-- Sections:
-  - `can.periodicFrames`
+- Top-level sections:
+  - `can`
   - `stateMachine`
 
 ### CAN Config
-- `can.periodicFrames` is an array of frame definitions.
-- Each frame entry:
-  - `id`: 11-bit CAN ID (hex string like `"0x510"` or number)
-  - `intervalMs`: transmit period in milliseconds
-- Current defaults:
+- `can.periodicFrames`
+  - Array of periodic transmit frame definitions.
+  - Each frame entry:
+    - `id`: 11-bit CAN ID (hex string like `"0x510"` or number)
+    - `intervalMs`: transmit period in milliseconds
+- `can.receiveId`
+  - 11-bit CAN ID to monitor on the receive path.
+  - Matching incoming frames are surfaced in the UI and decoded into `receivedData`.
+
+### Current CAN Defaults
+- TX:
   - `0x510 @ 20ms`
   - `0x512 @ 20ms`
   - `0x513 @ 20ms`
   - `0x514 @ 20ms`
+- RX filter:
+  - `0x520`
 
 ### State Machine Config
-- `stateMachine.intervalMs`: periodic tick rate in milliseconds
-- `stateMachine.transitionButtonIndex`: gamepad button used for transitions
-- `stateMachine.states`: enumeration map
-- `stateMachine.sequence`: transition order on rising-edge button press
-- Current default states:
+- `stateMachine.intervalMs`
+  - Periodic tick rate in milliseconds.
+- `stateMachine.transitionButtonIndex`
+  - Gamepad button used for transitions.
+- `stateMachine.states`
+  - Enumeration map.
+- `stateMachine.sequence`
+  - Transition order on rising-edge button press.
+
+### Current State Defaults
+- Enumeration:
   - `AS_INIT = 0`
   - `AS_OFF = 1`
   - `AS_READY = 2`
   - `AS_DRIVING = 3`
   - `AS_FINISHED = 4`
   - `AS_EMERGENCY = 5`
-- Current default sequence:
+- Sequence:
   - `AS_INIT -> AS_OFF -> AS_READY -> AS_DRIVING -> AS_FINISHED -> AS_EMERGENCY -> AS_INIT`
+- Current transition trigger:
+  - button index `0`
+- Current default state-machine tick:
+  - `20ms`
 
 ## UI Elements
-- TX config/status:
-  - `#frameConfig` (loaded frame schedule summary)
-  - `#txSchedulerState` (stopped/running)
-- State machine status:
-  - `#stateMachineConfig`
-  - `#stateMachineState`
-- SLCAN bitrate:
-  - `#slcanBitrate` (`S0`-`S8`, default `S4`)
-- Serial control:
+- Config/status:
+  - `#frameConfig`: loaded TX schedule summary
+  - `#rxConfig`: loaded RX filter ID
+  - `#stateMachineConfig`: loaded state-machine config summary
+  - `#stateMachineState`: current state label and enum
+- Controls:
+  - `#slcanBitrate`: SLCAN bitrate selector (`S0`-`S8`, default `S4`)
   - `#serialConnect`
   - `#serialDisconnect`
 - Runtime status:
   - `#serialState`
   - `#gamepadState`
+  - `#txSchedulerState`
   - `#txCount`
   - `#lastFrame`
+  - `#lastRxFrame`
 
-## Serial/SLCAN Behavior
+## Serial / SLCAN Behavior
 - Serial open baud rate: `115200`.
 - On connect:
   1. `navigator.serial.requestPort()`
   2. `port.open({ baudRate: 115200 })`
-  3. send `S{bitrate}` then `O`
-  4. start asynchronous periodic CAN TX loops
+  3. acquire writer
+  4. start async serial read loop
+  5. send `S{bitrate}`
+  6. send `O`
+  7. start periodic CAN TX loops
 - On disconnect:
-  - stop asynchronous CAN TX loops
-  - send `C`
+  - stop periodic CAN TX loops
+  - cancel serial reader
+  - wait for read loop shutdown
+  - send `C` (unless disconnect was triggered by read failure/device loss)
   - release writer lock
   - close port
-- Handles physical disconnect via `navigator.serial` `"disconnect"` event.
+- Physical USB disconnect:
+  - handled via `navigator.serial` `"disconnect"` event
 
 ## Asynchronous Scheduling
 - State machine:
-  - driven by an async periodic loop created in `state-machine.js`
+  - implemented in `state-machine.js`
+  - created via `window.AppStateMachine.create(...)`
+  - runs in its own async loop
   - ticks at `stateMachine.intervalMs`
-  - advances one state on each rising-edge button press from the configured button index
+  - advances on:
+    - rising-edge gamepad press of the configured button
+    - rising-edge `receivedData.exampleRemoteAdvanceRequest`
 - CAN transmission:
-  - each configured CAN frame has its own async periodic loop
-  - every loop tick sends one SLCAN frame using the latest payload snapshot
+  - each configured CAN ID has its own async loop
+  - every loop tick sends one SLCAN frame packed by `can-encoding.js`
+- Serial reception:
+  - read loop runs independently from TX and state-machine loops
+  - incoming data is buffered and split on `CR`/`LF`
 
-## CAN Frame Encoding
-- SLCAN 11-bit data frame format:
+## CAN Transmit Payload
+- `can-encoding.js` packs outgoing frames from globals.
+- Uses SLCAN 11-bit data frame format:
   - `t{ID3hex}{DLC1hex}{DATA...}\r`
-- DLC is 8 bytes for all periodic frames.
+- DLC is always `8` for current periodic TX frames.
 - Payload bytes:
-  - Byte 0: event type
-  - Byte 1: gamepad index
-  - Byte 2: control index (`0xFF` for connect/disconnect)
-  - Bytes 3-6: event payload
-  - Byte 7: current state enum value
+  - Byte 0: `gamepadData.eventType`
+  - Byte 1: `gamepadData.gamepadIndex`
+  - Byte 2: `gamepadData.controlIndex`
+  - Byte 3: `gamepadData.data0`
+  - Byte 4: `gamepadData.data1`
+  - Byte 5: `gamepadData.data2`
+  - Byte 6: `gamepadData.data3`
+  - Byte 7: `stateMachineData.stateValue`
 
 ## Event Type Codes
 - `0x01`: gamepad connected
@@ -110,31 +209,52 @@ Last updated: February 27, 2026
 - `0x10`: button changed
 - `0x20`: axis changed
 
-## Event Payload Mapping
-- Connect/Disconnect:
-  - Byte 3: button count
-  - Byte 4: axis count
-- Button change:
-  - Byte 3: pressed (`0` or `1`)
-  - Byte 4: analog value (`0..255`)
-- Axis change:
-  - Bytes 3-4: axis value as signed int16 little-endian from normalized `[-1, 1]`
+## Example RX Decode
+- `can-encoding.js` currently decodes matching RX payloads into example fields:
+  - Byte 0 -> `receivedData.exampleRemoteAdvanceRequest`
+  - Byte 1 -> `receivedData.exampleRemoteModeRequest`
+  - Bytes 2-3 -> `receivedData.exampleRemoteSetpoint` (little-endian uint16)
+  - Byte 4 -> `receivedData.exampleRemoteFlags`
+- These are example/dummy fields intended to make future control logic work clearer.
 
-## Thresholds and Queueing
-- Button analog delta threshold: `BUTTON_EPSILON = 0.02`
-- Axis delta threshold: `AXIS_EPSILON = 0.04`
-- Serial TX queue max size: `512` lines
+## CAN Receive Behavior
+- Incoming SLCAN receive parsing currently supports standard data frames only:
+  - `t{ID3hex}{DLC}{DATA...}`
+- Only frames whose ID matches `can.receiveId` are surfaced.
+- Matching frames:
+  - update `receivedData`
+  - update `#lastRxFrame` using `receivedData.lastDisplayText`
+- `#lastRxFrame` format:
+  - local timestamp `HH:MM:SS.mmm`
+  - payload bytes shown as uppercase hex separated by spaces
+
+## Gamepad Processing
+- Polling uses `requestAnimationFrame`.
+- Per-gamepad snapshots are stored in a `Map`.
+- The latest detected gamepad event updates `gamepadData`.
+- Thresholds:
+  - `BUTTON_EPSILON = 0.02`
+  - `AXIS_EPSILON = 0.04`
+
+## Queueing / Limits
+- Serial TX queue max size: `512` lines.
+- If the TX queue is full, the oldest queued line is dropped.
 
 ## Run and Test
 1. Serve over `http://localhost` (or another secure context).
-2. Open in Chromium browser (WebSerial + Gamepad support required).
-3. Edit `config.js` for CAN IDs, rates, states, or button index, then reload.
-4. Click **Connect SLCAN** and select adapter.
-5. Move gamepad controls and verify periodic traffic on all configured CAN IDs.
-6. Press the configured transition button and verify `stateMachineState` advances in sequence.
-7. Confirm transmitted frame byte 7 matches the displayed state enum.
+2. Open in a Chromium browser with WebSerial + Gamepad support.
+3. Edit `config.js` for CAN IDs, rates, RX filter, states, or button index, then reload.
+4. Click `Connect SLCAN` and select the adapter.
+5. Verify periodic TX on `0x510`, `0x512`, `0x513`, and `0x514`.
+6. Press the configured transition button and verify `#stateMachineState` steps through the configured sequence.
+7. Verify transmitted byte 7 matches the displayed state enum.
+8. Send an incoming frame with ID `0x520` and verify:
+  - `#lastRxFrame` updates with timestamp + payload
+  - `receivedData.exampleRemoteAdvanceRequest` can trigger the state machine when byte 0 changes from `0` to non-zero
 
 ## Constraints / Notes
-- WebSerial requires user gesture and secure context.
-- Only standard 11-bit CAN IDs are supported.
-- App transmits only; it does not parse incoming SLCAN responses.
+- WebSerial requires secure context and user gesture.
+- Only standard 11-bit CAN IDs are supported in current TX/RX parsing.
+- Globals are intentionally used directly in this iteration:
+  - clarity is preferred over encapsulation for now
+  - future refactors can formalize data ownership later

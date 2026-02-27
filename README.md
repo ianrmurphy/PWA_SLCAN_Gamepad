@@ -4,10 +4,14 @@ Static browser app that sends SLCAN CAN frames from HTML5 Gamepad events.
 
 ## Features
 - WebSerial connection to SLCAN adapters (`115200` serial).
+- Shared mutable application data in `globals.js` for straightforward cross-file use.
+- Dedicated CAN packing/parsing in `can-encoding.js`.
 - Configurable SLCAN bitrate (`S0` to `S8`).
 - Configurable periodic transmit frames in `config.js`:
   - `id` (11-bit CAN ID)
   - `intervalMs` (period)
+- Configurable receive filter in `config.js`:
+  - `can.receiveId` (currently `0x520`)
 - Configurable asynchronous state machine in `config.js`:
   - `intervalMs` (state machine tick rate)
   - `transitionButtonIndex`
@@ -29,6 +33,9 @@ Static browser app that sends SLCAN CAN frames from HTML5 Gamepad events.
 - Periodic CAN frames send:
   - gamepad payload in bytes `0..6`
   - current state enum in byte `7`
+- Incoming SLCAN frames are monitored asynchronously; matching `can.receiveId`
+  payloads are shown in the UI with a local timestamp.
+- Example received fields are decoded into globals and consumed by the state machine.
 
 ## Run
 1. Serve the repo over `http://localhost` (or another secure context).

@@ -10,6 +10,9 @@ window.APP_CONFIG = {
       { id: "0x513", intervalMs: 20 },
       { id: "0x514", intervalMs: 20 },
     ],
+
+    // Receive filter ID to display in the UI.
+    receiveId: "0x520",
   },
 
   stateMachine: {

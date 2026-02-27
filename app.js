@@ -21,9 +21,13 @@ const GAMEPAD_EVENT = {
 
 let serialPort = null;
 let serialWriter = null;
+let serialReader = null;
 let serialQueue = [];
 let serialDrainPromise = null;
+let serialReadLoopPromise = null;
+let serialReadBuffer = "";
 const serialEncoder = new TextEncoder();
+const serialDecoder = new TextDecoder();
 
 let txCount = 0;
 
@@ -33,9 +37,7 @@ let gamepadLoopHandle = 0;
 let periodicFrames = [];
 let canTxLoops = [];
 let stateMachine = null;
-
-// Bytes 0..6 are gamepad-derived; byte 7 carries the current state value.
-let latestGamepadPayload = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+let receiveId = 0x520;
 
 async function cleanupLegacyPwaArtifacts() {
   if ("serviceWorker" in navigator) {
@@ -77,6 +79,10 @@ function setFrameConfigState(text, className) {
   setCodeState("frameConfig", text, className);
 }
 
+function setRxConfigState(text, className) {
+  setCodeState("rxConfig", text, className);
+}
+
 function setStateMachineConfigState(text, className) {
   setCodeState("stateMachineConfig", text, className);
 }
@@ -93,15 +99,15 @@ function setLastFrame(value) {
   setCodeState("lastFrame", value);
 }
 
-function clampByte(value) {
-  const intValue = Number(value);
-  if (!Number.isFinite(intValue)) return 0;
-  if (intValue < 0) return 0;
-  if (intValue > 255) return 255;
-  return intValue | 0;
+function setLastRxFrame(value, className) {
+  setCodeState("lastRxFrame", value, className);
 }
 
 function parseCanIdValue(value) {
+  if (window.CanEncoding?.parseCanIdValue) {
+    return window.CanEncoding.parseCanIdValue(value);
+  }
+
   if (typeof value === "number" && Number.isInteger(value)) {
     if (value >= 0x000 && value <= 0x7ff) return value;
     return null;
@@ -143,10 +149,19 @@ function loadPeriodicFrames() {
   return normalized.length ? normalized : DEFAULT_PERIODIC_FRAMES.slice();
 }
 
+function loadReceiveId() {
+  const parsed = parseCanIdValue(window.APP_CONFIG?.can?.receiveId);
+  return parsed ?? 0x520;
+}
+
 function describePeriodicFrames(frames) {
   return frames
     .map((frame) => `0x${frame.id.toString(16).toUpperCase()}@${frame.intervalMs}ms`)
     .join(", ");
+}
+
+function formatCanId(canId) {
+  return `0x${canId.toString(16).toUpperCase().padStart(3, "0")}`;
 }
 
 function isSerialConnected() {
@@ -204,14 +219,63 @@ async function drainSerialQueue() {
   }
 }
 
-function encodeSlcanDataFrame(canId, data) {
-  const idHex = canId.toString(16).toUpperCase().padStart(3, "0");
-  const dlc = Math.min(8, data.length);
-  const dataHex = data
-    .slice(0, dlc)
-    .map((byte) => clampByte(byte).toString(16).toUpperCase().padStart(2, "0"))
-    .join("");
-  return `t${idHex}${dlc.toString(16).toUpperCase()}${dataHex}`;
+function consumeSerialInput(chunk) {
+  serialReadBuffer += serialDecoder.decode(chunk, { stream: true });
+
+  while (true) {
+    const boundaryIndex = serialReadBuffer.search(/[\r\n]/);
+    if (boundaryIndex < 0) break;
+
+    const rawLine = serialReadBuffer.slice(0, boundaryIndex).trim();
+    serialReadBuffer = serialReadBuffer.slice(boundaryIndex + 1);
+
+    if (!rawLine) continue;
+
+    const matchedFrame = window.CanEncoding?.tryConsumeIncomingLine(rawLine, receiveId);
+    if (matchedFrame) {
+      setLastRxFrame(window.AppGlobals.receivedData.lastDisplayText, "ok");
+    }
+  }
+}
+
+function startSerialReadLoop() {
+  if (!serialPort?.readable || serialReader) return;
+
+  const reader = serialPort.readable.getReader();
+  serialReader = reader;
+  serialReadBuffer = "";
+
+  serialReadLoopPromise = (async () => {
+    let readError = "";
+
+    try {
+      while (serialReader === reader) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value?.length) {
+          consumeSerialInput(value);
+        }
+      }
+    } catch (e) {
+      if (serialReader === reader) {
+        readError = e?.message ?? String(e);
+      }
+    } finally {
+      if (serialReader === reader) {
+        serialReader = null;
+      }
+
+      try {
+        reader.releaseLock();
+      } catch {}
+
+      serialReadLoopPromise = null;
+
+      if (readError) {
+        void disconnectSerial(`serial read failed: ${readError}`, "warn", false);
+      }
+    }
+  })();
 }
 
 function createAsyncLoop(intervalMs, task) {
@@ -271,25 +335,11 @@ function stopPeriodicTransmit() {
   setSchedulerState("stopped", "warn");
 }
 
-function buildPeriodicFrameData() {
-  const stateValue = stateMachine ? stateMachine.getCurrentStateValue() : 0;
-
-  return [
-    latestGamepadPayload[0],
-    latestGamepadPayload[1],
-    latestGamepadPayload[2],
-    latestGamepadPayload[3],
-    latestGamepadPayload[4],
-    latestGamepadPayload[5],
-    latestGamepadPayload[6],
-    stateValue,
-  ];
-}
-
 async function sendPeriodicFrame(frameConfig) {
   if (!isSerialConnected()) return;
+  if (!window.CanEncoding?.packPeriodicTxFrame) return;
 
-  const frame = encodeSlcanDataFrame(frameConfig.id, buildPeriodicFrameData());
+  const frame = window.CanEncoding.packPeriodicTxFrame(frameConfig.id);
   queueSerialLine(frame);
   txCount += 1;
   setTxCount(txCount);
@@ -321,10 +371,26 @@ async function disconnectSerial(stateText = "not connected", stateClass = "warn"
 
   const port = serialPort;
   const writer = serialWriter;
+  const reader = serialReader;
+  const readLoop = serialReadLoopPromise;
   serialPort = null;
   serialWriter = null;
+  serialReader = null;
   resetSerialQueue();
+  serialReadBuffer = "";
   updateSerialUI();
+
+  if (reader) {
+    try {
+      await reader.cancel();
+    } catch {}
+  }
+
+  if (readLoop) {
+    try {
+      await readLoop;
+    } catch {}
+  }
 
   if (writer) {
     if (sendClose) {
@@ -372,9 +438,11 @@ async function connectSerial() {
     serialPort = port;
     serialWriter = writer;
     resetSerialQueue();
+    startSerialReadLoop();
     txCount = 0;
     setTxCount(0);
     setLastFrame("-");
+    setLastRxFrame("-", "");
 
     await sendSlcanCommand(`S${getBitrateCode()}`);
     await sendSlcanCommand("O");
@@ -396,16 +464,10 @@ function axisToBytes(value) {
   return [twos & 0xff, (twos >> 8) & 0xff];
 }
 
-function updateGamepadPayload(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2 = 0, d3 = 0) {
-  latestGamepadPayload = [
-    clampByte(eventType),
-    clampByte(padIndex),
-    clampByte(controlIndex),
-    clampByte(d0),
-    clampByte(d1),
-    clampByte(d2),
-    clampByte(d3),
-  ];
+function setGamepadData(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2 = 0, d3 = 0) {
+  if (!window.CanEncoding?.updateGamepadData) return;
+
+  window.CanEncoding.updateGamepadData(eventType, padIndex, controlIndex, d0, d1, d2, d3);
 }
 
 function cloneGamepadState(gamepad) {
@@ -429,7 +491,7 @@ function processGamepads() {
 
     if (!previous) {
       gamepadSnapshots.set(index, cloneGamepadState(gamepad));
-      updateGamepadPayload(
+      setGamepadData(
         GAMEPAD_EVENT.connect,
         index,
         0xff,
@@ -447,7 +509,7 @@ function processGamepads() {
       const analogChanged = Math.abs(button.value - previousButton.value) >= BUTTON_EPSILON;
 
       if (pressedChanged || analogChanged) {
-        updateGamepadPayload(
+        setGamepadData(
           GAMEPAD_EVENT.button,
           index,
           buttonIndex,
@@ -463,7 +525,7 @@ function processGamepads() {
       if (Math.abs(currentValue - previousValue) < AXIS_EPSILON) continue;
 
       const [lo, hi] = axisToBytes(currentValue);
-      updateGamepadPayload(GAMEPAD_EVENT.axis, index, axisIndex, lo, hi);
+      setGamepadData(GAMEPAD_EVENT.axis, index, axisIndex, lo, hi);
     }
 
     gamepadSnapshots.set(index, cloneGamepadState(gamepad));
@@ -472,7 +534,7 @@ function processGamepads() {
   for (const [index, previous] of gamepadSnapshots.entries()) {
     if (seenIndices.has(index)) continue;
 
-    updateGamepadPayload(
+    setGamepadData(
       GAMEPAD_EVENT.disconnect,
       index,
       0xff,
@@ -511,7 +573,14 @@ function setupGamepadBridge() {
 
 function setupConfig() {
   periodicFrames = loadPeriodicFrames();
+  receiveId = loadReceiveId();
   setFrameConfigState(describePeriodicFrames(periodicFrames), periodicFrames.length ? "ok" : "warn");
+  setRxConfigState(formatCanId(receiveId), "ok");
+
+  if (!window.CanEncoding) {
+    setFrameConfigState("CAN encoding unavailable", "warn");
+    setRxConfigState("CAN encoding unavailable", "warn");
+  }
 
   if (!window.AppStateMachine?.create) {
     setStateMachineConfigState("state machine unavailable", "warn");
@@ -554,6 +623,7 @@ function setupSerialBridge() {
   setSchedulerState("stopped", "warn");
   setTxCount(0);
   setLastFrame("-");
+  setLastRxFrame("-", "");
   updateSerialUI();
 
   connectBtn.addEventListener("click", () => {

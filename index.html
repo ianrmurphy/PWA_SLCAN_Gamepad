@@ -33,6 +33,9 @@
         TX config: <code id="frameConfig">loading...</code>
       </p>
       <p class="muted">
+        RX filter: <code id="rxConfig">loading...</code>
+      </p>
+      <p class="muted">
         State config: <code id="stateMachineConfig">loading...</code> &bull;
         Current state: <code id="stateMachineState">loading...</code>
       </p>
@@ -65,9 +68,14 @@
         Frames sent: <code id="txCount">0</code> &bull;
         Last frame: <code id="lastFrame">-</code>
       </p>
+      <p class="muted">
+        Last RX: <code id="lastRxFrame">-</code>
+      </p>
     </div>
 
     <script src="config.js"></script>
+    <script src="globals.js"></script>
+    <script src="can-encoding.js"></script>
     <script src="state-machine.js"></script>
     <script src="app.js"></script>
   </body>

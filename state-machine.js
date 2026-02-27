@@ -1,4 +1,7 @@
 (function () {
+  const stateMachineData = window.AppGlobals.stateMachineData;
+  const receivedData = window.AppGlobals.receivedData;
+
   const DEFAULT_STATE_ENUM = {
     AS_INIT: 0,
     AS_OFF: 1,
@@ -126,6 +129,7 @@
 
     let currentStateName = config.sequence[0];
     let transitionButtonWasPressed = false;
+    let remoteAdvanceWasRequested = false;
     let loop = null;
 
     function getCurrentStateValue() {
@@ -134,6 +138,9 @@
 
     function notifyStateChanged() {
       const stateValue = getCurrentStateValue();
+      stateMachineData.stateName = currentStateName;
+      stateMachineData.stateValue = stateValue;
+
       onStateChanged({
         name: currentStateName,
         value: stateValue,
@@ -155,12 +162,18 @@
     async function tick() {
       const gamepad = getPrimaryGamepad();
       const isPressed = !!gamepad?.buttons?.[config.transitionButtonIndex]?.pressed;
+      const remoteAdvanceRequested = !!receivedData.exampleRemoteAdvanceRequest;
 
       if (isPressed && !transitionButtonWasPressed) {
         advance();
       }
 
+      if (remoteAdvanceRequested && !remoteAdvanceWasRequested) {
+        advance();
+      }
+
       transitionButtonWasPressed = isPressed;
+      remoteAdvanceWasRequested = remoteAdvanceRequested;
     }
 
     function start() {
