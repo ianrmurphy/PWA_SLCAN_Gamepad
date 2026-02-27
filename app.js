@@ -25,16 +25,16 @@ let serialQueue = [];
 let serialDrainPromise = null;
 const serialEncoder = new TextEncoder();
 
-let txSequence = 0;
 let txCount = 0;
 
 const gamepadSnapshots = new Map();
 let gamepadLoopHandle = 0;
 
 let periodicFrames = [];
-let periodicTimerHandles = [];
+let canTxLoops = [];
+let stateMachine = null;
 
-// Bytes 0..6 of the payload are gamepad-derived; byte 7 is TX sequence.
+// Bytes 0..6 are gamepad-derived; byte 7 carries the current state value.
 let latestGamepadPayload = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
 async function cleanupLegacyPwaArtifacts() {
@@ -77,6 +77,14 @@ function setFrameConfigState(text, className) {
   setCodeState("frameConfig", text, className);
 }
 
+function setStateMachineConfigState(text, className) {
+  setCodeState("stateMachineConfig", text, className);
+}
+
+function setStateMachineState(text, className) {
+  setCodeState("stateMachineState", text, className);
+}
+
 function setTxCount(value) {
   setCodeState("txCount", String(value));
 }
@@ -100,6 +108,7 @@ function parseCanIdValue(value) {
   }
 
   if (typeof value !== "string") return null;
+
   const normalized = value.trim().replace(/^0x/i, "");
   if (!/^[0-9A-Fa-f]{1,3}$/.test(normalized)) return null;
 
@@ -115,28 +124,29 @@ function normalizeFrameConfig(frame, fallback) {
   const intervalMs = Number(frame.intervalMs);
   if (id === null || !Number.isFinite(intervalMs) || intervalMs <= 0) return fallback;
 
-  return { id, intervalMs: Math.max(1, Math.round(intervalMs)) };
+  return {
+    id,
+    intervalMs: Math.max(1, Math.round(intervalMs)),
+  };
 }
 
 function loadPeriodicFrames() {
-  const rawFrames = window.CAN_BRIDGE_CONFIG?.periodicFrames;
-  if (!Array.isArray(rawFrames) || rawFrames.length === 0) {
+  const rawFrames = window.APP_CONFIG?.can?.periodicFrames;
+  if (!Array.isArray(rawFrames) || !rawFrames.length) {
     return DEFAULT_PERIODIC_FRAMES.slice();
   }
 
   const normalized = rawFrames
-    .map((frame, index) => normalizeFrameConfig(frame, null))
+    .map((frame, index) => normalizeFrameConfig(frame, DEFAULT_PERIODIC_FRAMES[index] ?? null))
     .filter(Boolean);
 
-  if (!normalized.length) {
-    return DEFAULT_PERIODIC_FRAMES.slice();
-  }
-
-  return normalized;
+  return normalized.length ? normalized : DEFAULT_PERIODIC_FRAMES.slice();
 }
 
 function describePeriodicFrames(frames) {
-  return frames.map((frame) => `0x${frame.id.toString(16).toUpperCase()}@${frame.intervalMs}ms`).join(", ");
+  return frames
+    .map((frame) => `0x${frame.id.toString(16).toUpperCase()}@${frame.intervalMs}ms`)
+    .join(", ");
 }
 
 function isSerialConnected() {
@@ -204,16 +214,67 @@ function encodeSlcanDataFrame(canId, data) {
   return `t${idHex}${dlc.toString(16).toUpperCase()}${dataHex}`;
 }
 
+function createAsyncLoop(intervalMs, task) {
+  let active = false;
+  let timeoutHandle = 0;
+
+  async function run() {
+    if (!active) return;
+
+    const startedAt = performance.now();
+    try {
+      await task();
+    } catch (e) {
+      console.error(e);
+    }
+
+    if (!active) return;
+
+    const elapsed = performance.now() - startedAt;
+    const nextDelay = Math.max(0, intervalMs - elapsed);
+    timeoutHandle = window.setTimeout(run, nextDelay);
+  }
+
+  return {
+    start() {
+      if (active) return;
+      active = true;
+      timeoutHandle = window.setTimeout(run, intervalMs);
+    },
+
+    stop() {
+      active = false;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = 0;
+      }
+    },
+  };
+}
+
+function getConnectedGamepads() {
+  if (!("getGamepads" in navigator)) return [];
+  return Array.from(navigator.getGamepads()).filter(Boolean);
+}
+
+function getPrimaryGamepad() {
+  const pads = getConnectedGamepads();
+  if (!pads.length) return null;
+
+  pads.sort((left, right) => left.index - right.index);
+  return pads[0];
+}
+
 function stopPeriodicTransmit() {
-  periodicTimerHandles.forEach((handle) => clearInterval(handle));
-  periodicTimerHandles = [];
+  canTxLoops.forEach((loop) => loop.stop());
+  canTxLoops = [];
   setSchedulerState("stopped", "warn");
 }
 
-function sendPeriodicFrame(frameConfig) {
-  if (!isSerialConnected()) return;
+function buildPeriodicFrameData() {
+  const stateValue = stateMachine ? stateMachine.getCurrentStateValue() : 0;
 
-  const data = [
+  return [
     latestGamepadPayload[0],
     latestGamepadPayload[1],
     latestGamepadPayload[2],
@@ -221,11 +282,14 @@ function sendPeriodicFrame(frameConfig) {
     latestGamepadPayload[4],
     latestGamepadPayload[5],
     latestGamepadPayload[6],
-    txSequence & 0xff,
+    stateValue,
   ];
-  txSequence = (txSequence + 1) & 0xff;
+}
 
-  const frame = encodeSlcanDataFrame(frameConfig.id, data);
+async function sendPeriodicFrame(frameConfig) {
+  if (!isSerialConnected()) return;
+
+  const frame = encodeSlcanDataFrame(frameConfig.id, buildPeriodicFrameData());
   queueSerialLine(frame);
   txCount += 1;
   setTxCount(txCount);
@@ -241,12 +305,15 @@ function startPeriodicTransmit() {
     return;
   }
 
-  periodicTimerHandles = periodicFrames.map((frameConfig) =>
-    setInterval(() => {
-      sendPeriodicFrame(frameConfig);
-    }, frameConfig.intervalMs)
-  );
-  setSchedulerState(`running (${periodicFrames.length} frames)`, "ok");
+  canTxLoops = periodicFrames.map((frameConfig) => {
+    const loop = createAsyncLoop(frameConfig.intervalMs, async () => {
+      await sendPeriodicFrame(frameConfig);
+    });
+    loop.start();
+    return loop;
+  });
+
+  setSchedulerState(`running (${periodicFrames.length} loops)`, "ok");
 }
 
 async function disconnectSerial(stateText = "not connected", stateClass = "warn", sendClose = true) {
@@ -305,7 +372,6 @@ async function connectSerial() {
     serialPort = port;
     serialWriter = writer;
     resetSerialQueue();
-    txSequence = 0;
     txCount = 0;
     setTxCount(0);
     setLastFrame("-");
@@ -353,11 +419,10 @@ function cloneGamepadState(gamepad) {
 }
 
 function processGamepads() {
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pads = getConnectedGamepads();
   const seenIndices = new Set();
 
   for (const gamepad of pads) {
-    if (!gamepad) continue;
     const index = gamepad.index;
     seenIndices.add(index);
     const previous = gamepadSnapshots.get(index);
@@ -406,6 +471,7 @@ function processGamepads() {
 
   for (const [index, previous] of gamepadSnapshots.entries()) {
     if (seenIndices.has(index)) continue;
+
     updateGamepadPayload(
       GAMEPAD_EVENT.disconnect,
       index,
@@ -417,7 +483,7 @@ function processGamepads() {
     setGamepadState(`disconnected #${index}`, "warn");
   }
 
-  if (!pads.some(Boolean) && gamepadSnapshots.size === 0) {
+  if (!pads.length && gamepadSnapshots.size === 0) {
     setGamepadState("waiting", "warn");
   }
 
@@ -446,6 +512,29 @@ function setupGamepadBridge() {
 function setupConfig() {
   periodicFrames = loadPeriodicFrames();
   setFrameConfigState(describePeriodicFrames(periodicFrames), periodicFrames.length ? "ok" : "warn");
+
+  if (!window.AppStateMachine?.create) {
+    setStateMachineConfigState("state machine unavailable", "warn");
+    setStateMachineState("unavailable", "warn");
+    stateMachine = null;
+    return;
+  }
+
+  stateMachine = window.AppStateMachine.create({
+    config: window.APP_CONFIG?.stateMachine,
+    getPrimaryGamepad,
+    onConfigLoaded({ description }) {
+      setStateMachineConfigState(description, "ok");
+    },
+    onStateChanged({ label }) {
+      setStateMachineState(label, "ok");
+    },
+  });
+}
+
+function startStateMachine() {
+  if (!stateMachine) return;
+  stateMachine.start();
 }
 
 function setupSerialBridge() {
@@ -485,6 +574,7 @@ function setupSerialBridge() {
 function main() {
   void cleanupLegacyPwaArtifacts();
   setupConfig();
+  startStateMachine();
   setupSerialBridge();
   setupGamepadBridge();
 }

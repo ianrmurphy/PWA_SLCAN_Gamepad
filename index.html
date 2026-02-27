@@ -32,6 +32,10 @@
       <p class="muted">
         TX config: <code id="frameConfig">loading...</code>
       </p>
+      <p class="muted">
+        State config: <code id="stateMachineConfig">loading...</code> &bull;
+        Current state: <code id="stateMachineState">loading...</code>
+      </p>
 
       <div class="row">
         <label class="muted" for="slcanBitrate" style="min-width: 5rem;">Bitrate</label>
@@ -63,7 +67,8 @@
       </p>
     </div>
 
-    <script src="can-config.js"></script>
+    <script src="config.js"></script>
+    <script src="state-machine.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

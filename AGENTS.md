@@ -7,20 +7,27 @@ Last updated: February 27, 2026
 - It is a dedicated gamepad-to-CAN bridge over WebSerial + SLCAN.
 - Main files:
   - `index.html`
-  - `can-config.js`
+  - `config.js`
+  - `state-machine.js`
   - `app.js`
   - `README.md`
 
 ## Current Scope
 - Uses WebSerial to connect to an SLCAN serial adapter.
 - Uses Gamepad API polling (`navigator.getGamepads()` in `requestAnimationFrame`).
-- Transmits configured CAN IDs periodically (per-frame interval from config).
-- Uses latest gamepad-derived payload for periodic transmission.
-- No service worker, manifest, install prompt, or template counter/note features remain.
+- Runs an asynchronous periodic state machine loop.
+- Runs asynchronous periodic CAN transmit loops from config.
+- Uses latest gamepad-derived payload as the base CAN payload.
+- State-machine development logic now lives in `state-machine.js`.
 
 ## Config File
-- `can-config.js` defines:
-  - `window.CAN_BRIDGE_CONFIG.periodicFrames`
+- `config.js` defines `window.APP_CONFIG`.
+- Sections:
+  - `can.periodicFrames`
+  - `stateMachine`
+
+### CAN Config
+- `can.periodicFrames` is an array of frame definitions.
 - Each frame entry:
   - `id`: 11-bit CAN ID (hex string like `"0x510"` or number)
   - `intervalMs`: transmit period in milliseconds
@@ -30,10 +37,28 @@ Last updated: February 27, 2026
   - `0x513 @ 20ms`
   - `0x514 @ 20ms`
 
+### State Machine Config
+- `stateMachine.intervalMs`: periodic tick rate in milliseconds
+- `stateMachine.transitionButtonIndex`: gamepad button used for transitions
+- `stateMachine.states`: enumeration map
+- `stateMachine.sequence`: transition order on rising-edge button press
+- Current default states:
+  - `AS_INIT = 0`
+  - `AS_OFF = 1`
+  - `AS_READY = 2`
+  - `AS_DRIVING = 3`
+  - `AS_FINISHED = 4`
+  - `AS_EMERGENCY = 5`
+- Current default sequence:
+  - `AS_INIT -> AS_OFF -> AS_READY -> AS_DRIVING -> AS_FINISHED -> AS_EMERGENCY -> AS_INIT`
+
 ## UI Elements
 - TX config/status:
   - `#frameConfig` (loaded frame schedule summary)
   - `#txSchedulerState` (stopped/running)
+- State machine status:
+  - `#stateMachineConfig`
+  - `#stateMachineState`
 - SLCAN bitrate:
   - `#slcanBitrate` (`S0`-`S8`, default `S4`)
 - Serial control:
@@ -51,23 +76,22 @@ Last updated: February 27, 2026
   1. `navigator.serial.requestPort()`
   2. `port.open({ baudRate: 115200 })`
   3. send `S{bitrate}` then `O`
-  4. start periodic TX timers for configured frame list
+  4. start asynchronous periodic CAN TX loops
 - On disconnect:
-  - stop periodic TX timers
+  - stop asynchronous CAN TX loops
   - send `C`
   - release writer lock
   - close port
 - Handles physical disconnect via `navigator.serial` `"disconnect"` event.
 
-## Periodic Transmission Model
-- Each configured frame ID has its own `setInterval` timer.
-- Every tick sends one SLCAN data frame using:
-  - configured CAN ID
-  - latest gamepad payload bytes (0..6)
-  - rolling TX sequence byte (7)
-- TX queue:
-  - max 512 pending lines
-  - drops oldest line if full
+## Asynchronous Scheduling
+- State machine:
+  - driven by an async periodic loop created in `state-machine.js`
+  - ticks at `stateMachine.intervalMs`
+  - advances one state on each rising-edge button press from the configured button index
+- CAN transmission:
+  - each configured CAN frame has its own async periodic loop
+  - every loop tick sends one SLCAN frame using the latest payload snapshot
 
 ## CAN Frame Encoding
 - SLCAN 11-bit data frame format:
@@ -78,7 +102,7 @@ Last updated: February 27, 2026
   - Byte 1: gamepad index
   - Byte 2: control index (`0xFF` for connect/disconnect)
   - Bytes 3-6: event payload
-  - Byte 7: rolling TX sequence counter
+  - Byte 7: current state enum value
 
 ## Event Type Codes
 - `0x01`: gamepad connected
@@ -104,10 +128,11 @@ Last updated: February 27, 2026
 ## Run and Test
 1. Serve over `http://localhost` (or another secure context).
 2. Open in Chromium browser (WebSerial + Gamepad support required).
-3. Edit `can-config.js` for IDs/rates if needed, then reload.
+3. Edit `config.js` for CAN IDs, rates, states, or button index, then reload.
 4. Click **Connect SLCAN** and select adapter.
 5. Move gamepad controls and verify periodic traffic on all configured CAN IDs.
-6. Confirm `txSchedulerState` is running and `txCount` increments.
+6. Press the configured transition button and verify `stateMachineState` advances in sequence.
+7. Confirm transmitted frame byte 7 matches the displayed state enum.
 
 ## Constraints / Notes
 - WebSerial requires user gesture and secure context.
