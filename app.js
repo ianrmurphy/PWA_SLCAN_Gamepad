@@ -5,6 +5,13 @@ const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
 const MAX_SERIAL_QUEUE = 512;
 
+const DEFAULT_PERIODIC_FRAMES = [
+  { id: 0x510, intervalMs: 20 },
+  { id: 0x512, intervalMs: 20 },
+  { id: 0x513, intervalMs: 20 },
+  { id: 0x514, intervalMs: 20 },
+];
+
 const GAMEPAD_EVENT = {
   connect: 0x01,
   disconnect: 0x02,
@@ -23,6 +30,12 @@ let txCount = 0;
 
 const gamepadSnapshots = new Map();
 let gamepadLoopHandle = 0;
+
+let periodicFrames = [];
+let periodicTimerHandles = [];
+
+// Bytes 0..6 of the payload are gamepad-derived; byte 7 is TX sequence.
+let latestGamepadPayload = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
 async function cleanupLegacyPwaArtifacts() {
   if ("serviceWorker" in navigator) {
@@ -56,12 +69,74 @@ function setGamepadState(text, className) {
   setCodeState("gamepadState", text, className);
 }
 
+function setSchedulerState(text, className) {
+  setCodeState("txSchedulerState", text, className);
+}
+
+function setFrameConfigState(text, className) {
+  setCodeState("frameConfig", text, className);
+}
+
 function setTxCount(value) {
   setCodeState("txCount", String(value));
 }
 
 function setLastFrame(value) {
   setCodeState("lastFrame", value);
+}
+
+function clampByte(value) {
+  const intValue = Number(value);
+  if (!Number.isFinite(intValue)) return 0;
+  if (intValue < 0) return 0;
+  if (intValue > 255) return 255;
+  return intValue | 0;
+}
+
+function parseCanIdValue(value) {
+  if (typeof value === "number" && Number.isInteger(value)) {
+    if (value >= 0x000 && value <= 0x7ff) return value;
+    return null;
+  }
+
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/^0x/i, "");
+  if (!/^[0-9A-Fa-f]{1,3}$/.test(normalized)) return null;
+
+  const parsed = Number.parseInt(normalized, 16);
+  if (Number.isNaN(parsed) || parsed < 0x000 || parsed > 0x7ff) return null;
+  return parsed;
+}
+
+function normalizeFrameConfig(frame, fallback) {
+  if (!frame || typeof frame !== "object") return fallback;
+
+  const id = parseCanIdValue(frame.id);
+  const intervalMs = Number(frame.intervalMs);
+  if (id === null || !Number.isFinite(intervalMs) || intervalMs <= 0) return fallback;
+
+  return { id, intervalMs: Math.max(1, Math.round(intervalMs)) };
+}
+
+function loadPeriodicFrames() {
+  const rawFrames = window.CAN_BRIDGE_CONFIG?.periodicFrames;
+  if (!Array.isArray(rawFrames) || rawFrames.length === 0) {
+    return DEFAULT_PERIODIC_FRAMES.slice();
+  }
+
+  const normalized = rawFrames
+    .map((frame, index) => normalizeFrameConfig(frame, null))
+    .filter(Boolean);
+
+  if (!normalized.length) {
+    return DEFAULT_PERIODIC_FRAMES.slice();
+  }
+
+  return normalized;
+}
+
+function describePeriodicFrames(frames) {
+  return frames.map((frame) => `0x${frame.id.toString(16).toUpperCase()}@${frame.intervalMs}ms`).join(", ");
 }
 
 function isSerialConnected() {
@@ -75,24 +150,6 @@ function updateSerialUI() {
 
   if (connectBtn) connectBtn.disabled = !webSerialSupported || isSerialConnected();
   if (disconnectBtn) disconnectBtn.disabled = !isSerialConnected();
-}
-
-function parseCanId() {
-  const raw = $("canId")?.value?.trim() ?? "";
-  if (!/^[0-9A-Fa-f]{1,3}$/.test(raw)) return null;
-
-  const canId = Number.parseInt(raw, 16);
-  if (Number.isNaN(canId) || canId < 0x000 || canId > 0x7ff) return null;
-  return canId;
-}
-
-function normalizeCanIdInput() {
-  const canIdInput = $("canId");
-  if (!canIdInput) return;
-
-  const parsed = parseCanId();
-  if (parsed === null) return;
-  canIdInput.value = parsed.toString(16).toUpperCase().padStart(3, "0");
 }
 
 function getBitrateCode() {
@@ -137,7 +194,64 @@ async function drainSerialQueue() {
   }
 }
 
+function encodeSlcanDataFrame(canId, data) {
+  const idHex = canId.toString(16).toUpperCase().padStart(3, "0");
+  const dlc = Math.min(8, data.length);
+  const dataHex = data
+    .slice(0, dlc)
+    .map((byte) => clampByte(byte).toString(16).toUpperCase().padStart(2, "0"))
+    .join("");
+  return `t${idHex}${dlc.toString(16).toUpperCase()}${dataHex}`;
+}
+
+function stopPeriodicTransmit() {
+  periodicTimerHandles.forEach((handle) => clearInterval(handle));
+  periodicTimerHandles = [];
+  setSchedulerState("stopped", "warn");
+}
+
+function sendPeriodicFrame(frameConfig) {
+  if (!isSerialConnected()) return;
+
+  const data = [
+    latestGamepadPayload[0],
+    latestGamepadPayload[1],
+    latestGamepadPayload[2],
+    latestGamepadPayload[3],
+    latestGamepadPayload[4],
+    latestGamepadPayload[5],
+    latestGamepadPayload[6],
+    txSequence & 0xff,
+  ];
+  txSequence = (txSequence + 1) & 0xff;
+
+  const frame = encodeSlcanDataFrame(frameConfig.id, data);
+  queueSerialLine(frame);
+  txCount += 1;
+  setTxCount(txCount);
+  setLastFrame(frame);
+}
+
+function startPeriodicTransmit() {
+  stopPeriodicTransmit();
+
+  if (!isSerialConnected()) return;
+  if (!periodicFrames.length) {
+    setSchedulerState("no frames configured", "warn");
+    return;
+  }
+
+  periodicTimerHandles = periodicFrames.map((frameConfig) =>
+    setInterval(() => {
+      sendPeriodicFrame(frameConfig);
+    }, frameConfig.intervalMs)
+  );
+  setSchedulerState(`running (${periodicFrames.length} frames)`, "ok");
+}
+
 async function disconnectSerial(stateText = "not connected", stateClass = "warn", sendClose = true) {
+  stopPeriodicTransmit();
+
   const port = serialPort;
   const writer = serialWriter;
   serialPort = null;
@@ -175,9 +289,8 @@ async function connectSerial() {
 
   if (isSerialConnected()) return;
 
-  const canId = parseCanId();
-  if (canId === null) {
-    setSerialState("invalid CAN ID (hex 000-7FF)", "warn");
+  if (!periodicFrames.length) {
+    setSerialState("no valid TX frame config", "warn");
     return;
   }
 
@@ -200,6 +313,7 @@ async function connectSerial() {
     await sendSlcanCommand(`S${getBitrateCode()}`);
     await sendSlcanCommand("O");
 
+    startPeriodicTransmit();
     setSerialState("connected (channel open)", "ok");
   } catch (e) {
     const message = e?.message ?? String(e);
@@ -209,24 +323,6 @@ async function connectSerial() {
   updateSerialUI();
 }
 
-function clampByte(value) {
-  const intValue = Number(value);
-  if (!Number.isFinite(intValue)) return 0;
-  if (intValue < 0) return 0;
-  if (intValue > 255) return 255;
-  return intValue | 0;
-}
-
-function encodeSlcanDataFrame(canId, data) {
-  const idHex = canId.toString(16).toUpperCase().padStart(3, "0");
-  const dlc = Math.min(8, data.length);
-  const dataHex = data
-    .slice(0, dlc)
-    .map((byte) => clampByte(byte).toString(16).toUpperCase().padStart(2, "0"))
-    .join("");
-  return `t${idHex}${dlc.toString(16).toUpperCase()}${dataHex}`;
-}
-
 function axisToBytes(value) {
   const clamped = Math.max(-1, Math.min(1, value));
   const scaled = Math.round(clamped * 32767);
@@ -234,32 +330,16 @@ function axisToBytes(value) {
   return [twos & 0xff, (twos >> 8) & 0xff];
 }
 
-function queueGamepadFrame(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2 = 0, d3 = 0) {
-  if (!isSerialConnected()) return;
-
-  const canId = parseCanId();
-  if (canId === null) {
-    setSerialState("invalid CAN ID (hex 000-7FF)", "warn");
-    return;
-  }
-
-  const frameData = [
-    eventType,
-    padIndex & 0xff,
-    controlIndex & 0xff,
+function updateGamepadPayload(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2 = 0, d3 = 0) {
+  latestGamepadPayload = [
+    clampByte(eventType),
+    clampByte(padIndex),
+    clampByte(controlIndex),
     clampByte(d0),
     clampByte(d1),
     clampByte(d2),
     clampByte(d3),
-    txSequence & 0xff,
   ];
-  txSequence = (txSequence + 1) & 0xff;
-
-  const frame = encodeSlcanDataFrame(canId, frameData);
-  queueSerialLine(frame);
-  txCount += 1;
-  setTxCount(txCount);
-  setLastFrame(frame);
 }
 
 function cloneGamepadState(gamepad) {
@@ -284,7 +364,7 @@ function processGamepads() {
 
     if (!previous) {
       gamepadSnapshots.set(index, cloneGamepadState(gamepad));
-      queueGamepadFrame(
+      updateGamepadPayload(
         GAMEPAD_EVENT.connect,
         index,
         0xff,
@@ -302,7 +382,7 @@ function processGamepads() {
       const analogChanged = Math.abs(button.value - previousButton.value) >= BUTTON_EPSILON;
 
       if (pressedChanged || analogChanged) {
-        queueGamepadFrame(
+        updateGamepadPayload(
           GAMEPAD_EVENT.button,
           index,
           buttonIndex,
@@ -318,7 +398,7 @@ function processGamepads() {
       if (Math.abs(currentValue - previousValue) < AXIS_EPSILON) continue;
 
       const [lo, hi] = axisToBytes(currentValue);
-      queueGamepadFrame(GAMEPAD_EVENT.axis, index, axisIndex, lo, hi);
+      updateGamepadPayload(GAMEPAD_EVENT.axis, index, axisIndex, lo, hi);
     }
 
     gamepadSnapshots.set(index, cloneGamepadState(gamepad));
@@ -326,7 +406,7 @@ function processGamepads() {
 
   for (const [index, previous] of gamepadSnapshots.entries()) {
     if (seenIndices.has(index)) continue;
-    queueGamepadFrame(
+    updateGamepadPayload(
       GAMEPAD_EVENT.disconnect,
       index,
       0xff,
@@ -363,20 +443,26 @@ function setupGamepadBridge() {
   }
 }
 
+function setupConfig() {
+  periodicFrames = loadPeriodicFrames();
+  setFrameConfigState(describePeriodicFrames(periodicFrames), periodicFrames.length ? "ok" : "warn");
+}
+
 function setupSerialBridge() {
   const connectBtn = $("serialConnect");
   const disconnectBtn = $("serialDisconnect");
-  const canIdInput = $("canId");
 
-  if (!connectBtn || !disconnectBtn || !canIdInput) return;
+  if (!connectBtn || !disconnectBtn) return;
 
   if (!("serial" in navigator)) {
     setSerialState("WebSerial not supported", "warn");
+    setSchedulerState("unavailable", "warn");
     updateSerialUI();
     return;
   }
 
   setSerialState("ready to connect", "warn");
+  setSchedulerState("stopped", "warn");
   setTxCount(0);
   setLastFrame("-");
   updateSerialUI();
@@ -389,19 +475,6 @@ function setupSerialBridge() {
     void disconnectSerial();
   });
 
-  canIdInput.addEventListener("input", () => {
-    if (parseCanId() === null) {
-      setSerialState("invalid CAN ID (hex 000-7FF)", "warn");
-      return;
-    }
-
-    if (!isSerialConnected()) {
-      setSerialState("ready to connect", "warn");
-    }
-  });
-
-  canIdInput.addEventListener("blur", normalizeCanIdInput);
-
   navigator.serial.addEventListener("disconnect", (event) => {
     if (serialPort && event.port === serialPort) {
       void disconnectSerial("device disconnected", "warn", false);
@@ -411,6 +484,7 @@ function setupSerialBridge() {
 
 function main() {
   void cleanupLegacyPwaArtifacts();
+  setupConfig();
   setupSerialBridge();
   setupGamepadBridge();
 }

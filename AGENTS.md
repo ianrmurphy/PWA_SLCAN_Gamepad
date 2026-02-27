@@ -4,21 +4,37 @@ Last updated: February 27, 2026
 
 ## Project Summary
 - This repo is a static browser app (no build step, no framework).
-- It is now a dedicated gamepad-to-CAN bridge, not a generic PWA demo.
+- It is a dedicated gamepad-to-CAN bridge over WebSerial + SLCAN.
 - Main files:
   - `index.html`
+  - `can-config.js`
   - `app.js`
   - `README.md`
 
 ## Current Scope
 - Uses WebSerial to connect to an SLCAN serial adapter.
 - Uses Gamepad API polling (`navigator.getGamepads()` in `requestAnimationFrame`).
-- Emits one CAN frame for each gamepad event/change above thresholds.
+- Transmits configured CAN IDs periodically (per-frame interval from config).
+- Uses latest gamepad-derived payload for periodic transmission.
 - No service worker, manifest, install prompt, or template counter/note features remain.
 
+## Config File
+- `can-config.js` defines:
+  - `window.CAN_BRIDGE_CONFIG.periodicFrames`
+- Each frame entry:
+  - `id`: 11-bit CAN ID (hex string like `"0x510"` or number)
+  - `intervalMs`: transmit period in milliseconds
+- Current defaults:
+  - `0x510 @ 20ms`
+  - `0x512 @ 20ms`
+  - `0x513 @ 20ms`
+  - `0x514 @ 20ms`
+
 ## UI Elements
-- CAN configuration:
-  - `#canId` (hex, `000`-`7FF`)
+- TX config/status:
+  - `#frameConfig` (loaded frame schedule summary)
+  - `#txSchedulerState` (stopped/running)
+- SLCAN bitrate:
   - `#slcanBitrate` (`S0`-`S8`, default `S4`)
 - Serial control:
   - `#serialConnect`
@@ -35,16 +51,28 @@ Last updated: February 27, 2026
   1. `navigator.serial.requestPort()`
   2. `port.open({ baudRate: 115200 })`
   3. send `S{bitrate}` then `O`
+  4. start periodic TX timers for configured frame list
 - On disconnect:
+  - stop periodic TX timers
   - send `C`
   - release writer lock
   - close port
 - Handles physical disconnect via `navigator.serial` `"disconnect"` event.
 
+## Periodic Transmission Model
+- Each configured frame ID has its own `setInterval` timer.
+- Every tick sends one SLCAN data frame using:
+  - configured CAN ID
+  - latest gamepad payload bytes (0..6)
+  - rolling TX sequence byte (7)
+- TX queue:
+  - max 512 pending lines
+  - drops oldest line if full
+
 ## CAN Frame Encoding
-- Uses SLCAN standard 11-bit data frame format:
+- SLCAN 11-bit data frame format:
   - `t{ID3hex}{DLC1hex}{DATA...}\r`
-- DLC is 8 bytes for all emitted events.
+- DLC is 8 bytes for all periodic frames.
 - Payload bytes:
   - Byte 0: event type
   - Byte 1: gamepad index
@@ -71,16 +99,17 @@ Last updated: February 27, 2026
 ## Thresholds and Queueing
 - Button analog delta threshold: `BUTTON_EPSILON = 0.02`
 - Axis delta threshold: `AXIS_EPSILON = 0.04`
-- Serial TX queue max size: `512` lines (drops oldest when full)
+- Serial TX queue max size: `512` lines
 
 ## Run and Test
 1. Serve over `http://localhost` (or another secure context).
 2. Open in Chromium browser (WebSerial + Gamepad support required).
-3. Click **Connect SLCAN** and select adapter.
-4. Move gamepad controls and verify CAN traffic on bus monitor.
-5. Confirm `txCount` increments and `lastFrame` updates.
+3. Edit `can-config.js` for IDs/rates if needed, then reload.
+4. Click **Connect SLCAN** and select adapter.
+5. Move gamepad controls and verify periodic traffic on all configured CAN IDs.
+6. Confirm `txSchedulerState` is running and `txCount` increments.
 
 ## Constraints / Notes
 - WebSerial requires user gesture and secure context.
-- Only standard 11-bit CAN IDs are currently supported.
+- Only standard 11-bit CAN IDs are supported.
 - App transmits only; it does not parse incoming SLCAN responses.

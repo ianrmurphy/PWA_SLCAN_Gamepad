@@ -29,10 +29,9 @@
         connect/disconnect, button, and axis change events.
       </p>
 
-      <div class="row">
-        <label class="muted" for="canId" style="min-width: 5rem;">CAN ID</label>
-        <input id="canId" value="123" maxlength="3" />
-      </div>
+      <p class="muted">
+        TX config: <code id="frameConfig">loading...</code>
+      </p>
 
       <div class="row">
         <label class="muted" for="slcanBitrate" style="min-width: 5rem;">Bitrate</label>
@@ -55,7 +54,8 @@
       </div>
       <p class="muted">
         Serial: <code id="serialState">not connected</code> &bull;
-        Gamepad: <code id="gamepadState">waiting</code>
+        Gamepad: <code id="gamepadState">waiting</code> &bull;
+        Scheduler: <code id="txSchedulerState">stopped</code>
       </p>
       <p class="muted">
         Frames sent: <code id="txCount">0</code> &bull;
@@ -63,6 +63,7 @@
       </p>
     </div>
 
+    <script src="can-config.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
