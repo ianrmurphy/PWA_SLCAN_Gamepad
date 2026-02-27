@@ -11,35 +11,8 @@ window.APP_CONFIG = {
       { id: "0x514", intervalMs: 20 },
     ],
 
-    // Receive filter ID to display in the UI.
-    receiveId: "0x520",
-  },
-
-  stateMachine: {
-    // State machine tick rate.
-    intervalMs: 20,
-
-    // Button index used for state transitions (rising edge).
-    transitionButtonIndex: 0,
-
-    // Enumeration.
-    states: {
-      AS_INIT: 0,
-      AS_OFF: 1,
-      AS_READY: 2,
-      AS_DRIVING: 3,
-      AS_FINISHED: 4,
-      AS_EMERGENCY: 5,
-    },
-
-    // Transition order on each button press.
-    sequence: [
-      "AS_INIT",
-      "AS_OFF",
-      "AS_READY",
-      "AS_DRIVING",
-      "AS_FINISHED",
-      "AS_EMERGENCY",
-    ],
+    // Receive filter ID.
+    // VCU2AI_Status_ID (0x520) carries HANDSHAKE, GO_SIGNAL, AS_STATE, and AMI_STATE.
+    vcu2AiStatusId: "0x520",
   },
 };

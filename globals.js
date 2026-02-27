@@ -1,17 +1,32 @@
 // Shared application data.
-// These globals are intentionally simple and mutable so app.js,
-// state-machine.js, and can-encoding.js can all read/write the same values.
+// These globals are intentionally simple and mutable so all runtime files can
+// read/write the same values without encapsulation during early iterations.
 
 window.AppGlobals = {
-  // State machine values that are encoded into outgoing CAN frames.
-  stateMachineData: {
-    stateName: "AS_INIT",
-    stateValue: 0x00,
-  },
+  // Variables copied from `switch.c`.
+  // C fixed-width integer types map to JavaScript Number.
+  HANDSHAKE: false,
+  GO_SIGNAL: false,
+  AS_STATE: 0,
+  AMI_STATE: 0,
+  GAMEPAD_BUTTON_0_PRESSED: false,
+  GAMEPAD_X_AXIS: 0,
+  GAMEPAD_Y_AXIS: 0,
 
-  // Latest gamepad-derived values that are encoded into outgoing CAN frames.
-  gamepadData: {
-    eventType: 0x00,
+  MISSION_STATUS: 0,
+  STEER_REQUEST: 0,
+  TORQUE_REQUEST: 0,
+  SPEED_REQUEST: 0,
+  BRAKE_REQUEST: 0,
+  DIRECTION_REQUEST: 0,
+  ESTOP_REQUEST: 0,
+
+  mission_timer: 0,
+
+  // Values packed into outgoing CAN frames.
+  txData: {
+    asState: 0x00,
+    gamepadEventType: 0x00,
     gamepadIndex: 0x00,
     controlIndex: 0x00,
     data0: 0x00,
@@ -20,15 +35,27 @@ window.AppGlobals = {
     data3: 0x00,
   },
 
-  // Example received data that can be consumed by the state machine.
-  receivedData: {
+  // Values decoded from the incoming VCU2AI status frame (0x520).
+  vcu2AiStatusData: {
     matchedId: null,
     lastPayloadBytes: [],
     lastTimestamp: "",
     lastDisplayText: "-",
-    exampleRemoteAdvanceRequest: 0x00,
-    exampleRemoteModeRequest: 0x00,
-    exampleRemoteSetpoint: 0x0000,
-    exampleRemoteFlags: 0x00,
+    HANDSHAKE: false,
+    GO_SIGNAL: false,
+    AS_STATE: 0x00,
+    AMI_STATE: 0x00,
+  },
+
+  // Example control logic outputs driven by switch(AS_STATE).
+  controlLogicData: {
+    activeCase: "AS_OFF",
+    statusText: "Waiting for RX state",
+    allowTorque: false,
+    readyToDrive: false,
+    finishRequested: false,
+    emergencyActive: false,
+    handshakeValid: false,
+    goSignalActive: false,
   },
 };

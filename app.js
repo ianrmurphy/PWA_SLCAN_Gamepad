@@ -4,6 +4,7 @@ const SERIAL_BAUD_RATE = 115200;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
 const MAX_SERIAL_QUEUE = 512;
+const MISSION_TIMER_TICK_MS = 10;
 
 const DEFAULT_PERIODIC_FRAMES = [
   { id: 0x510, intervalMs: 20 },
@@ -36,17 +37,11 @@ let gamepadLoopHandle = 0;
 
 let periodicFrames = [];
 let canTxLoops = [];
-let stateMachine = null;
-let receiveId = 0x520;
+let controlLogic = null;
+let vcu2AiStatusId = 0x520;
+let missionTimerLoop = null;
 
 async function cleanupLegacyPwaArtifacts() {
-  if ("serviceWorker" in navigator) {
-    try {
-      const registrations = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(registrations.map((registration) => registration.unregister()));
-    } catch {}
-  }
-
   if ("caches" in window) {
     try {
       const cacheNames = await caches.keys();
@@ -83,12 +78,12 @@ function setRxConfigState(text, className) {
   setCodeState("rxConfig", text, className);
 }
 
-function setStateMachineConfigState(text, className) {
-  setCodeState("stateMachineConfig", text, className);
+function setLogicConfigState(text, className) {
+  setCodeState("logicConfig", text, className);
 }
 
-function setStateMachineState(text, className) {
-  setCodeState("stateMachineState", text, className);
+function setAsStateDisplay(text, className) {
+  setCodeState("asStateDisplay", text, className);
 }
 
 function setTxCount(value) {
@@ -103,24 +98,17 @@ function setLastRxFrame(value, className) {
   setCodeState("lastRxFrame", value, className);
 }
 
+function setCanDebugData(value) {
+  const elem = $("canDebugData");
+  if (!elem) return;
+  elem.textContent = value;
+}
+
 function parseCanIdValue(value) {
   if (window.CanEncoding?.parseCanIdValue) {
     return window.CanEncoding.parseCanIdValue(value);
   }
-
-  if (typeof value === "number" && Number.isInteger(value)) {
-    if (value >= 0x000 && value <= 0x7ff) return value;
-    return null;
-  }
-
-  if (typeof value !== "string") return null;
-
-  const normalized = value.trim().replace(/^0x/i, "");
-  if (!/^[0-9A-Fa-f]{1,3}$/.test(normalized)) return null;
-
-  const parsed = Number.parseInt(normalized, 16);
-  if (Number.isNaN(parsed) || parsed < 0x000 || parsed > 0x7ff) return null;
-  return parsed;
+  return null;
 }
 
 function normalizeFrameConfig(frame, fallback) {
@@ -149,9 +137,11 @@ function loadPeriodicFrames() {
   return normalized.length ? normalized : DEFAULT_PERIODIC_FRAMES.slice();
 }
 
-function loadReceiveId() {
-  const parsed = parseCanIdValue(window.APP_CONFIG?.can?.receiveId);
-  return parsed ?? 0x520;
+function loadVcu2AiStatusId() {
+  const parsed =
+    parseCanIdValue(window.APP_CONFIG?.can?.vcu2AiStatusId) ??
+    parseCanIdValue(window.APP_CONFIG?.can?.receiveId);
+  return parsed ?? (window.CanEncoding?.VCU2AI_STATUS_ID ?? 0x520);
 }
 
 function describePeriodicFrames(frames) {
@@ -162,6 +152,88 @@ function describePeriodicFrames(frames) {
 
 function formatCanId(canId) {
   return `0x${canId.toString(16).toUpperCase().padStart(3, "0")}`;
+}
+
+function formatPayloadHex(data) {
+  if (!Array.isArray(data)) return "-";
+  if (!data.length) return "(empty)";
+  if (window.CanEncoding?.formatPayloadBytes) {
+    return window.CanEncoding.formatPayloadBytes(data);
+  }
+  return data
+    .map((byte) => Number(byte || 0).toString(16).toUpperCase().padStart(2, "0"))
+    .join(" ");
+}
+
+function buildCanDebugSnapshot() {
+  const appGlobals = window.AppGlobals;
+  if (!appGlobals) {
+    return { status: "AppGlobals unavailable" };
+  }
+
+  const txFrames = {};
+  for (const frame of periodicFrames) {
+    const payload = window.CanEncoding?.buildOutgoingPayloadBytes
+      ? window.CanEncoding.buildOutgoingPayloadBytes(frame.id)
+      : [];
+    txFrames[formatCanId(frame.id)] = {
+      intervalMs: frame.intervalMs,
+      payloadHex: formatPayloadHex(payload),
+    };
+  }
+
+  return {
+    canRx: {
+      filterId: formatCanId(vcu2AiStatusId),
+      decodedGlobals: {
+        HANDSHAKE: appGlobals.HANDSHAKE,
+        GO_SIGNAL: appGlobals.GO_SIGNAL,
+        AS_STATE: appGlobals.AS_STATE,
+        AMI_STATE: appGlobals.AMI_STATE,
+      },
+      vcu2AiStatusData: {
+        matchedId:
+          typeof appGlobals.vcu2AiStatusData?.matchedId === "number"
+            ? formatCanId(appGlobals.vcu2AiStatusData.matchedId)
+            : null,
+        lastTimestamp: appGlobals.vcu2AiStatusData?.lastTimestamp ?? "",
+        lastPayloadHex: formatPayloadHex(appGlobals.vcu2AiStatusData?.lastPayloadBytes),
+      },
+    },
+    canTx: {
+      sourceGlobals: {
+        MISSION_STATUS: appGlobals.MISSION_STATUS,
+        STEER_REQUEST: appGlobals.STEER_REQUEST,
+        TORQUE_REQUEST: appGlobals.TORQUE_REQUEST,
+        SPEED_REQUEST: appGlobals.SPEED_REQUEST,
+        BRAKE_REQUEST: appGlobals.BRAKE_REQUEST,
+        DIRECTION_REQUEST: appGlobals.DIRECTION_REQUEST,
+        ESTOP_REQUEST: appGlobals.ESTOP_REQUEST,
+        mission_timer: appGlobals.mission_timer,
+      },
+      txData: {
+        asState: appGlobals.txData?.asState ?? 0,
+        gamepadEventType: appGlobals.txData?.gamepadEventType ?? 0,
+        gamepadIndex: appGlobals.txData?.gamepadIndex ?? 0,
+        controlIndex: appGlobals.txData?.controlIndex ?? 0,
+        data0: appGlobals.txData?.data0 ?? 0,
+        data1: appGlobals.txData?.data1 ?? 0,
+        data2: appGlobals.txData?.data2 ?? 0,
+        data3: appGlobals.txData?.data3 ?? 0,
+      },
+      txFrames,
+    },
+    otherGlobals: {
+      GAMEPAD_BUTTON_0_PRESSED: appGlobals.GAMEPAD_BUTTON_0_PRESSED,
+      GAMEPAD_X_AXIS: appGlobals.GAMEPAD_X_AXIS,
+      GAMEPAD_Y_AXIS: appGlobals.GAMEPAD_Y_AXIS,
+      controlLogicData: appGlobals.controlLogicData,
+    },
+  };
+}
+
+function refreshCanDebugData() {
+  setCanDebugData(JSON.stringify(buildCanDebugSnapshot(), null, 2));
 }
 
 function isSerialConnected() {
@@ -219,6 +291,18 @@ async function drainSerialQueue() {
   }
 }
 
+function refreshControlLogicDisplay() {
+  if (!controlLogic) {
+    refreshCanDebugData();
+    return;
+  }
+
+  const snapshot = controlLogic.refresh();
+  const extra = `AMI:${snapshot.amiState} HS:${snapshot.handshake ? 1 : 0} GO:${snapshot.goSignal ? 1 : 0} MS:${snapshot.missionStatus} T:${snapshot.missionTimer}`;
+  setAsStateDisplay(`${snapshot.label} ${extra}`, "ok");
+  refreshCanDebugData();
+}
+
 function consumeSerialInput(chunk) {
   serialReadBuffer += serialDecoder.decode(chunk, { stream: true });
 
@@ -231,9 +315,10 @@ function consumeSerialInput(chunk) {
 
     if (!rawLine) continue;
 
-    const matchedFrame = window.CanEncoding?.tryConsumeIncomingLine(rawLine, receiveId);
+    const matchedFrame = window.CanEncoding?.tryConsumeIncomingLine(rawLine, vcu2AiStatusId);
     if (matchedFrame) {
-      setLastRxFrame(window.AppGlobals.receivedData.lastDisplayText, "ok");
+      setLastRxFrame(window.AppGlobals.vcu2AiStatusData.lastDisplayText, "ok");
+      refreshControlLogicDisplay();
     }
   }
 }
@@ -316,17 +401,60 @@ function createAsyncLoop(intervalMs, task) {
   };
 }
 
+function tickMissionTimer() {
+  if (!controlLogic) return;
+
+  if (window.AppGlobals.AS_STATE === 0x3) {
+    window.AppGlobals.mission_timer += MISSION_TIMER_TICK_MS;
+  }
+
+  refreshControlLogicDisplay();
+}
+
+function startMissionTimerLoop() {
+  if (missionTimerLoop) return;
+
+  missionTimerLoop = createAsyncLoop(MISSION_TIMER_TICK_MS, () => {
+    tickMissionTimer();
+  });
+  missionTimerLoop.start();
+}
+
 function getConnectedGamepads() {
   if (!("getGamepads" in navigator)) return [];
   return Array.from(navigator.getGamepads()).filter(Boolean);
 }
 
-function getPrimaryGamepad() {
-  const pads = getConnectedGamepads();
-  if (!pads.length) return null;
+function updatePrimaryGamepadInputs(pads) {
+  const primary = pads.length
+    ? pads.slice().sort((left, right) => left.index - right.index)[0]
+    : null;
 
-  pads.sort((left, right) => left.index - right.index);
-  return pads[0];
+  window.AppGlobals.GAMEPAD_BUTTON_0_PRESSED = !!primary?.buttons?.[0]?.pressed;
+  window.AppGlobals.GAMEPAD_X_AXIS = Number(primary?.axes?.[0] ?? 0);
+  window.AppGlobals.GAMEPAD_Y_AXIS = Number(primary?.axes?.[1] ?? 0);
+  if (!Number.isFinite(window.AppGlobals.GAMEPAD_X_AXIS)) {
+    window.AppGlobals.GAMEPAD_X_AXIS = 0;
+  }
+  if (!Number.isFinite(window.AppGlobals.GAMEPAD_Y_AXIS)) {
+    window.AppGlobals.GAMEPAD_Y_AXIS = 0;
+  }
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+
+  const isSecureContextLike =
+    window.isSecureContext ||
+    location.hostname === "localhost" ||
+    location.hostname === "127.0.0.1";
+  if (!isSecureContextLike) return;
+
+  try {
+    await navigator.serviceWorker.register("sw.js");
+  } catch (e) {
+    console.warn("service worker registration failed", e);
+  }
 }
 
 function stopPeriodicTransmit() {
@@ -468,6 +596,7 @@ function setGamepadData(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2 = 
   if (!window.CanEncoding?.updateGamepadData) return;
 
   window.CanEncoding.updateGamepadData(eventType, padIndex, controlIndex, d0, d1, d2, d3);
+  refreshCanDebugData();
 }
 
 function cloneGamepadState(gamepad) {
@@ -483,6 +612,8 @@ function cloneGamepadState(gamepad) {
 function processGamepads() {
   const pads = getConnectedGamepads();
   const seenIndices = new Set();
+
+  updatePrimaryGamepadInputs(pads);
 
   for (const gamepad of pads) {
     const index = gamepad.index;
@@ -573,37 +704,31 @@ function setupGamepadBridge() {
 
 function setupConfig() {
   periodicFrames = loadPeriodicFrames();
-  receiveId = loadReceiveId();
+  vcu2AiStatusId = loadVcu2AiStatusId();
   setFrameConfigState(describePeriodicFrames(periodicFrames), periodicFrames.length ? "ok" : "warn");
-  setRxConfigState(formatCanId(receiveId), "ok");
+  setRxConfigState(`VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
 
   if (!window.CanEncoding) {
     setFrameConfigState("CAN encoding unavailable", "warn");
     setRxConfigState("CAN encoding unavailable", "warn");
   }
 
-  if (!window.AppStateMachine?.create) {
-    setStateMachineConfigState("state machine unavailable", "warn");
-    setStateMachineState("unavailable", "warn");
-    stateMachine = null;
+  if (!window.ControlLogic?.create) {
+    setLogicConfigState("control logic unavailable", "warn");
+    setAsStateDisplay("unavailable", "warn");
+    controlLogic = null;
     return;
   }
 
-  stateMachine = window.AppStateMachine.create({
-    config: window.APP_CONFIG?.stateMachine,
-    getPrimaryGamepad,
-    onConfigLoaded({ description }) {
-      setStateMachineConfigState(description, "ok");
-    },
-    onStateChanged({ label }) {
-      setStateMachineState(label, "ok");
+  controlLogic = window.ControlLogic.create({
+    onLogicChanged(snapshot) {
+      const extra = `AMI:${snapshot.amiState} HS:${snapshot.handshake ? 1 : 0} GO:${snapshot.goSignal ? 1 : 0} MS:${snapshot.missionStatus} T:${snapshot.missionTimer}`;
+      setAsStateDisplay(`${snapshot.label} ${extra}`, "ok");
     },
   });
-}
 
-function startStateMachine() {
-  if (!stateMachine) return;
-  stateMachine.start();
+  setLogicConfigState(`switch(AS_STATE), source VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
+  refreshCanDebugData();
 }
 
 function setupSerialBridge() {
@@ -624,6 +749,7 @@ function setupSerialBridge() {
   setTxCount(0);
   setLastFrame("-");
   setLastRxFrame("-", "");
+  refreshCanDebugData();
   updateSerialUI();
 
   connectBtn.addEventListener("click", () => {
@@ -643,8 +769,9 @@ function setupSerialBridge() {
 
 function main() {
   void cleanupLegacyPwaArtifacts();
+  void registerServiceWorker();
   setupConfig();
-  startStateMachine();
+  startMissionTimerLoop();
   setupSerialBridge();
   setupGamepadBridge();
 }

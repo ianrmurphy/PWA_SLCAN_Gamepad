@@ -3,20 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0f172a" />
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" href="icons/icon-192.svg" type="image/svg+xml" />
     <title>Gamepad to CAN Bridge</title>
 
     <style>
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
-      .card { max-width: 640px; padding: 1rem 1.25rem; border: 1px solid #e5e7eb; border-radius: 12px; }
+      .card { max-width: 960px; padding: 1rem 1.25rem; border: 1px solid #e5e7eb; border-radius: 12px; }
       button { padding: .5rem .75rem; border-radius: 10px; border: 1px solid #d1d5db; background: white; cursor: pointer; }
       button:active { transform: translateY(1px); }
       input, select { width: 100%; padding: .5rem .75rem; border-radius: 10px; border: 1px solid #d1d5db; }
       .row { display: flex; gap: .5rem; align-items: center; margin: .75rem 0; }
       .muted { color: #6b7280; font-size: .9rem; }
       code { background: #f3f4f6; padding: .1rem .25rem; border-radius: 6px; }
+      pre { margin: .75rem 0 0; padding: .75rem; border-radius: 10px; background: #f8fafc; border: 1px solid #e5e7eb; overflow-x: auto; font-size: .85rem; line-height: 1.35; }
       .ok { color: #065f46; }
       .warn { color: #92400e; }
     </style>
@@ -36,8 +40,8 @@
         RX filter: <code id="rxConfig">loading...</code>
       </p>
       <p class="muted">
-        State config: <code id="stateMachineConfig">loading...</code> &bull;
-        Current state: <code id="stateMachineState">loading...</code>
+        Control logic: <code id="logicConfig">loading...</code> &bull;
+        AS_STATE: <code id="asStateDisplay">loading...</code>
       </p>
 
       <div class="row">
@@ -71,12 +75,15 @@
       <p class="muted">
         Last RX: <code id="lastRxFrame">-</code>
       </p>
+
+      <p class="muted">CAN debug globals</p>
+      <pre id="canDebugData">loading...</pre>
     </div>
 
     <script src="config.js"></script>
     <script src="globals.js"></script>
     <script src="can-encoding.js"></script>
-    <script src="state-machine.js"></script>
+    <script src="control-logic.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
