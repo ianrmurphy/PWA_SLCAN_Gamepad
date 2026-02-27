@@ -1,14 +1,10 @@
 const $ = (id) => document.getElementById(id);
 
-const STORAGE_KEYS = {
-  count: "basic_pwa_count",
-  note: "basic_pwa_note",
-};
-let deferredInstallPrompt = null;
-
 const SERIAL_BAUD_RATE = 115200;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
+const MAX_SERIAL_QUEUE = 512;
+
 const GAMEPAD_EVENT = {
   connect: 0x01,
   disconnect: 0x02,
@@ -21,142 +17,35 @@ let serialWriter = null;
 let serialQueue = [];
 let serialDrainPromise = null;
 const serialEncoder = new TextEncoder();
+
 let txSequence = 0;
+let txCount = 0;
 
 const gamepadSnapshots = new Map();
 let gamepadLoopHandle = 0;
 
-function loadState() {
-  const count = Number(localStorage.getItem(STORAGE_KEYS.count) ?? "0");
-  const note = localStorage.getItem(STORAGE_KEYS.note) ?? "";
-  return { count, note };
+async function cleanupLegacyPwaArtifacts() {
+  if ("serviceWorker" in navigator) {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map((registration) => registration.unregister()));
+    } catch {}
+  }
+
+  if ("caches" in window) {
+    try {
+      const cacheNames = await caches.keys();
+      const legacyCacheNames = cacheNames.filter((name) => name.startsWith("basic-pwa-cache-"));
+      await Promise.all(legacyCacheNames.map((name) => caches.delete(name)));
+    } catch {}
+  }
 }
 
-function saveCount(count) {
-  localStorage.setItem(STORAGE_KEYS.count, String(count));
-}
-
-function saveNote(note) {
-  localStorage.setItem(STORAGE_KEYS.note, note);
-}
-
-function render({ count, note }) {
-  $("count").textContent = String(count);
-  $("note").value = note;
-}
-
-function setCodeState(id, text, className) {
+function setCodeState(id, text, className = "") {
   const elem = $(id);
   if (!elem) return;
   elem.textContent = text;
-  elem.className = className ?? "";
-}
-
-function updateNetworkStatus() {
-  setCodeState("netState", navigator.onLine ? "online" : "offline", navigator.onLine ? "ok" : "warn");
-  $("status").textContent = navigator.onLine
-    ? "Online: you can load/update the cache."
-    : "Offline: this page is served from cache.";
-}
-
-function isStandaloneMode() {
-  return (
-    window.matchMedia("(display-mode: standalone)").matches ||
-    window.navigator.standalone === true
-  );
-}
-
-function setInstallState(text, className) {
-  setCodeState("installState", text, className);
-}
-
-function updateInstallUI() {
-  const installBtn = $("install");
-  if (!installBtn) return;
-
-  if (isStandaloneMode()) {
-    installBtn.hidden = true;
-    setInstallState("installed", "ok");
-    return;
-  }
-
-  if (deferredInstallPrompt) {
-    installBtn.hidden = false;
-    installBtn.disabled = false;
-    setInstallState("available", "ok");
-    return;
-  }
-
-  installBtn.hidden = true;
-  setInstallState("not available yet", "warn");
-}
-
-function setupInstallFlow() {
-  const installBtn = $("install");
-  if (!installBtn) return;
-
-  installBtn.addEventListener("click", async () => {
-    if (!deferredInstallPrompt) return;
-
-    const promptEvent = deferredInstallPrompt;
-    deferredInstallPrompt = null;
-    installBtn.disabled = true;
-
-    try {
-      await promptEvent.prompt();
-      const choice = await promptEvent.userChoice;
-
-      if (choice?.outcome === "accepted") {
-        setInstallState("accepted, installing...", "ok");
-      } else {
-        setInstallState("dismissed", "warn");
-      }
-    } catch (e) {
-      setInstallState(`error: ${e?.message ?? e}`, "warn");
-    }
-
-    updateInstallUI();
-  });
-
-  window.addEventListener("beforeinstallprompt", (event) => {
-    event.preventDefault();
-    deferredInstallPrompt = event;
-    updateInstallUI();
-  });
-
-  window.addEventListener("appinstalled", () => {
-    deferredInstallPrompt = null;
-    updateInstallUI();
-  });
-
-  updateInstallUI();
-}
-
-async function registerServiceWorker() {
-  if (!("serviceWorker" in navigator)) {
-    setCodeState("swState", "not supported", "warn");
-    return;
-  }
-
-  try {
-    const reg = await navigator.serviceWorker.register("./sw.js", { scope: "./" });
-
-    // Note: first install may not control the page until reload.
-    const controlled = !!navigator.serviceWorker.controller;
-
-    setCodeState("swState", controlled ? "active (controlling)" : "installed (reload once)", "ok");
-
-    reg.addEventListener("updatefound", () => {
-      setCodeState("swState", "updating...", "warn");
-    });
-
-    navigator.serviceWorker.addEventListener("controllerchange", () => {
-      setCodeState("swState", "active (controlling)", "ok");
-    });
-  } catch (e) {
-    setCodeState("swState", "failed", "warn");
-    $("status").textContent = `Service worker error: ${e?.message ?? e}`;
-  }
+  elem.className = className;
 }
 
 function setSerialState(text, className) {
@@ -165,6 +54,14 @@ function setSerialState(text, className) {
 
 function setGamepadState(text, className) {
   setCodeState("gamepadState", text, className);
+}
+
+function setTxCount(value) {
+  setCodeState("txCount", String(value));
+}
+
+function setLastFrame(value) {
+  setCodeState("lastFrame", value);
 }
 
 function isSerialConnected() {
@@ -216,16 +113,20 @@ function resetSerialQueue() {
 function queueSerialLine(line) {
   if (!isSerialConnected()) return;
 
-  // Keep queue bounded if gamepad updates spike.
-  if (serialQueue.length >= 512) {
+  if (serialQueue.length >= MAX_SERIAL_QUEUE) {
     serialQueue.shift();
   }
 
   serialQueue.push(`${line}\r`);
   if (!serialDrainPromise) {
-    serialDrainPromise = drainSerialQueue().finally(() => {
-      serialDrainPromise = null;
-    });
+    serialDrainPromise = drainSerialQueue()
+      .catch(async (e) => {
+        const message = e?.message ?? String(e);
+        await disconnectSerial(`serial write failed: ${message}`, "warn", false);
+      })
+      .finally(() => {
+        serialDrainPromise = null;
+      });
   }
 }
 
@@ -236,7 +137,7 @@ async function drainSerialQueue() {
   }
 }
 
-async function disconnectSerial(stateText = "not connected", stateClass = "warn") {
+async function disconnectSerial(stateText = "not connected", stateClass = "warn", sendClose = true) {
   const port = serialPort;
   const writer = serialWriter;
   serialPort = null;
@@ -245,9 +146,11 @@ async function disconnectSerial(stateText = "not connected", stateClass = "warn"
   updateSerialUI();
 
   if (writer) {
-    try {
-      await writer.write(serialEncoder.encode("C\r"));
-    } catch {}
+    if (sendClose) {
+      try {
+        await writer.write(serialEncoder.encode("C\r"));
+      } catch {}
+    }
 
     try {
       writer.releaseLock();
@@ -290,6 +193,9 @@ async function connectSerial() {
     serialWriter = writer;
     resetSerialQueue();
     txSequence = 0;
+    txCount = 0;
+    setTxCount(0);
+    setLastFrame("-");
 
     await sendSlcanCommand(`S${getBitrateCode()}`);
     await sendSlcanCommand("O");
@@ -348,7 +254,12 @@ function queueGamepadFrame(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2
     txSequence & 0xff,
   ];
   txSequence = (txSequence + 1) & 0xff;
-  queueSerialLine(encodeSlcanDataFrame(canId, frameData));
+
+  const frame = encodeSlcanDataFrame(canId, frameData);
+  queueSerialLine(frame);
+  txCount += 1;
+  setTxCount(txCount);
+  setLastFrame(frame);
 }
 
 function cloneGamepadState(gamepad) {
@@ -466,6 +377,8 @@ function setupSerialBridge() {
   }
 
   setSerialState("ready to connect", "warn");
+  setTxCount(0);
+  setLastFrame("-");
   updateSerialUI();
 
   connectBtn.addEventListener("click", () => {
@@ -481,6 +394,7 @@ function setupSerialBridge() {
       setSerialState("invalid CAN ID (hex 000-7FF)", "warn");
       return;
     }
+
     if (!isSerialConnected()) {
       setSerialState("ready to connect", "warn");
     }
@@ -490,48 +404,15 @@ function setupSerialBridge() {
 
   navigator.serial.addEventListener("disconnect", (event) => {
     if (serialPort && event.port === serialPort) {
-      void disconnectSerial("device disconnected", "warn");
+      void disconnectSerial("device disconnected", "warn", false);
     }
   });
 }
 
 function main() {
-  let state = loadState();
-  render(state);
-
-  $("inc").addEventListener("click", () => {
-    state.count += 1;
-    saveCount(state.count);
-    render(state);
-  });
-
-  $("dec").addEventListener("click", () => {
-    state.count -= 1;
-    saveCount(state.count);
-    render(state);
-  });
-
-  $("reset").addEventListener("click", () => {
-    state.count = 0;
-    state.note = "";
-    saveCount(state.count);
-    saveNote(state.note);
-    render(state);
-  });
-
-  $("note").addEventListener("input", (e) => {
-    state.note = e.target.value;
-    saveNote(state.note);
-  });
-
-  window.addEventListener("online", updateNetworkStatus);
-  window.addEventListener("offline", updateNetworkStatus);
-  updateNetworkStatus();
-
-  setupInstallFlow();
+  void cleanupLegacyPwaArtifacts();
   setupSerialBridge();
   setupGamepadBridge();
-  registerServiceWorker();
 }
 
 main();
