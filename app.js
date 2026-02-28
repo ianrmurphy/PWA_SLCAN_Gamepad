@@ -1,10 +1,13 @@
 const $ = (id) => document.getElementById(id);
 
+const APP_BUILD_VERSION = "2026-02-28.1";
 const DEFAULT_SERIAL_BAUD_RATE = 2000000;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
+const GAMEPAD_POLL_INTERVAL_MS = 10;
 const MAX_SERIAL_QUEUE = 512;
 const MISSION_TIMER_TICK_MS = 10;
+const DEBUG_RENDER_INTERVAL_MS = 100;
 const SLCAN_ACK_TIMEOUT_MS = 750;
 const SLCAN_INIT_ACK_TIMEOUT_MS = 2000;
 const MAX_SERIAL_LOG_LINES = 200;
@@ -40,7 +43,7 @@ const serialDecoder = new TextDecoder();
 let txCount = 0;
 
 const gamepadSnapshots = new Map();
-let gamepadLoopHandle = 0;
+let gamepadPollLoop = null;
 
 let periodicFrames = [];
 let canTxLoops = [];
@@ -54,6 +57,9 @@ let serialLoadWindowStartedAt = performance.now();
 let serialRxBytesSinceSample = 0;
 let serialTxBytesSinceSample = 0;
 let missionTimerLoop = null;
+let lastDebugRenderAt = 0;
+let debugRenderTimeoutHandle = 0;
+let lastGamepadLiveText = "";
 
 async function cleanupLegacyPwaArtifacts() {
   if ("caches" in window) {
@@ -76,8 +82,22 @@ function setSerialState(text, className) {
   setCodeState("serialState", text, className);
 }
 
+function setAppVersion(text, className) {
+  setCodeState("appVersion", text, className);
+}
+
 function setGamepadState(text, className) {
   setCodeState("gamepadState", text, className);
+}
+
+function setGamepadPollingState(text, className) {
+  setCodeState("gamepadPollingState", text, className);
+}
+
+function setGamepadLiveDisplay(text, className) {
+  if (text === lastGamepadLiveText) return;
+  lastGamepadLiveText = text;
+  setCodeState("gamepadLiveDisplay", text, className);
 }
 
 function setSchedulerState(text, className) {
@@ -102,6 +122,28 @@ function setLogicConfigState(text, className) {
 
 function setAsStateDisplay(text, className) {
   setCodeState("asStateDisplay", text, className);
+}
+
+function refreshOutputStateDisplay() {
+  const appGlobals = window.AppGlobals;
+  if (!appGlobals) {
+    setCodeState("missionStatusDisplay", "unavailable", "warn");
+    setCodeState("steerRequestDisplay", "unavailable", "warn");
+    setCodeState("torqueRequestDisplay", "unavailable", "warn");
+    setCodeState("speedRequestDisplay", "unavailable", "warn");
+    setCodeState("brakeRequestDisplay", "unavailable", "warn");
+    setCodeState("directionRequestDisplay", "unavailable", "warn");
+    setCodeState("estopRequestDisplay", "unavailable", "warn");
+    return;
+  }
+
+  setCodeState("missionStatusDisplay", String(appGlobals.MISSION_STATUS ?? 0), "ok");
+  setCodeState("steerRequestDisplay", String(appGlobals.STEER_REQUEST ?? 0), "ok");
+  setCodeState("torqueRequestDisplay", String(appGlobals.TORQUE_REQUEST ?? 0), "ok");
+  setCodeState("speedRequestDisplay", String(appGlobals.SPEED_REQUEST ?? 0), "ok");
+  setCodeState("brakeRequestDisplay", String(appGlobals.BRAKE_REQUEST ?? 0), "ok");
+  setCodeState("directionRequestDisplay", String(appGlobals.DIRECTION_REQUEST ?? 0), "ok");
+  setCodeState("estopRequestDisplay", String(appGlobals.ESTOP_REQUEST ?? 0), "ok");
 }
 
 function setTxCount(value) {
@@ -133,7 +175,12 @@ function setSerialConsoleData(value) {
   elem.scrollTop = elem.scrollHeight;
 }
 
-function refreshSerialConsole() {
+function isPanelOpen(id) {
+  return !!$(id)?.open;
+}
+
+function refreshSerialConsole(force = false) {
+  if (!force && !isPanelOpen("serialConsolePanel")) return;
   setSerialConsoleData(serialLogLines.length ? serialLogLines.join("\n") : "waiting for serial traffic...");
 }
 
@@ -206,6 +253,18 @@ function formatPayloadHex(data) {
     .join(" ");
 }
 
+function formatUiTimestamp(date = new Date()) {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  const milliseconds = String(date.getMilliseconds()).padStart(3, "0");
+  return `${hours}:${minutes}:${seconds}.${milliseconds}`;
+}
+
+function formatLastTxFrameDisplay(canId, payloadBytes, date = new Date()) {
+  return `${formatUiTimestamp(date)} ${formatCanId(canId)} ${formatPayloadHex(payloadBytes)}`;
+}
+
 function buildCanDebugSnapshot() {
   const appGlobals = window.AppGlobals;
   if (!appGlobals) {
@@ -272,8 +331,46 @@ function buildCanDebugSnapshot() {
   };
 }
 
-function refreshCanDebugData() {
+function renderCanDebugDataNow() {
+  if (debugRenderTimeoutHandle) {
+    clearTimeout(debugRenderTimeoutHandle);
+    debugRenderTimeoutHandle = 0;
+  }
+
+  lastDebugRenderAt = performance.now();
   setCanDebugData(JSON.stringify(buildCanDebugSnapshot(), null, 2));
+}
+
+function refreshCanDebugData(force = false) {
+  if (!force && !isPanelOpen("debugGlobalsPanel")) return;
+
+  const elapsedMs = performance.now() - lastDebugRenderAt;
+  if (force || elapsedMs >= DEBUG_RENDER_INTERVAL_MS) {
+    renderCanDebugDataNow();
+    return;
+  }
+
+  if (debugRenderTimeoutHandle) return;
+  debugRenderTimeoutHandle = window.setTimeout(() => {
+    debugRenderTimeoutHandle = 0;
+    if (!isPanelOpen("debugGlobalsPanel")) return;
+    renderCanDebugDataNow();
+  }, DEBUG_RENDER_INTERVAL_MS - elapsedMs);
+}
+
+function setupCollapsiblePanels() {
+  $("serialConsolePanel")?.addEventListener("toggle", (event) => {
+    if (event.currentTarget?.open) {
+      refreshSerialConsole(true);
+    }
+  });
+
+  $("debugGlobalsPanel")?.addEventListener("toggle", (event) => {
+    if (event.currentTarget?.open) {
+      lastDebugRenderAt = 0;
+      refreshCanDebugData(true);
+    }
+  });
 }
 
 function isSerialConnected() {
@@ -470,6 +567,17 @@ function matchPendingAckLine(trimmedLine) {
   }
 
   if (waiter.command === "V") {
+    const firstChar = trimmedLine[0] ?? "";
+    if (
+      firstChar === "t" ||
+      firstChar === "T" ||
+      firstChar === "r" ||
+      firstChar === "R" ||
+      upperLine === "Z" ||
+      upperLine === "A"
+    ) {
+      return false;
+    }
     settleNextSerialAck(true, trimmedLine);
     return true;
   }
@@ -497,10 +605,10 @@ async function configureSlcanReceiveFilter() {
   try {
     await sendSlcanCommand("M00000000");
     await sendSlcanCommand("mFFFFFFFF");
-    setRxConfigState(`adapter open, decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
+    setRxConfigState(`adapter open, VCU2AI_Status ${formatCanId(vcu2AiStatusId)}`, "ok");
   } catch (e) {
     console.warn("SLCAN receive filter setup skipped", e);
-    setRxConfigState(`adapter RX unknown, decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "warn");
+    setRxConfigState(`adapter RX unknown, VCU2AI_Status ${formatCanId(vcu2AiStatusId)}`, "warn");
   }
 }
 
@@ -540,13 +648,20 @@ async function drainSerialQueue() {
 
 function refreshControlLogicDisplay() {
   if (!controlLogic) {
+    refreshOutputStateDisplay();
     refreshCanDebugData();
     return;
   }
 
   const snapshot = controlLogic.refresh();
-  const extra = `AMI:${snapshot.amiState} HS:${snapshot.handshake ? 1 : 0} GO:${snapshot.goSignal ? 1 : 0} MS:${snapshot.missionStatus} T:${snapshot.missionTimer}`;
-  setAsStateDisplay(`${snapshot.label} ${extra}`, "ok");
+  const stateSummary = [
+    `AS_STATE:${snapshot.asState}`,
+    `AMI_STATE:${snapshot.amiState}`,
+    `HANDSHAKE:${snapshot.handshake ? 1 : 0}`,
+    `GO_SIGNAL:${snapshot.goSignal ? 1 : 0}`,
+  ].join(" ");
+  setAsStateDisplay(stateSummary, "ok");
+  refreshOutputStateDisplay();
   refreshCanDebugData();
 }
 
@@ -787,6 +902,9 @@ function updatePrimaryGamepadInputs(pads) {
   if (!Number.isFinite(window.AppGlobals.GAMEPAD_Y_AXIS)) {
     window.AppGlobals.GAMEPAD_Y_AXIS = 0;
   }
+
+  const liveText = `pads:${pads.length} X:${window.AppGlobals.GAMEPAD_X_AXIS.toFixed(2)} Y:${window.AppGlobals.GAMEPAD_Y_AXIS.toFixed(2)} B0:${window.AppGlobals.GAMEPAD_BUTTON_0_PRESSED ? 1 : 0}`;
+  setGamepadLiveDisplay(liveText, pads.length ? "ok" : "warn");
 }
 
 async function registerServiceWorker() {
@@ -815,11 +933,14 @@ async function sendPeriodicFrame(frameConfig) {
   if (!isSerialConnected()) return;
   if (!window.CanEncoding?.packPeriodicTxFrame) return;
 
+  const payloadBytes = window.CanEncoding?.buildOutgoingPayloadBytes
+    ? window.CanEncoding.buildOutgoingPayloadBytes(frameConfig.id)
+    : [];
   const frame = window.CanEncoding.packPeriodicTxFrame(frameConfig.id);
   queueSerialLine(frame);
   txCount += 1;
   setTxCount(txCount);
-  setLastFrame(frame);
+  setLastFrame(formatLastTxFrameDisplay(frameConfig.id, payloadBytes));
 }
 
 function startPeriodicTransmit() {
@@ -1015,7 +1136,10 @@ function processGamepads() {
         gamepad.buttons.length,
         gamepad.axes.length
       );
-      setGamepadState(`connected #${index}`, "ok");
+      setGamepadState(
+        `connected #${index} (${gamepad.buttons.length} buttons, ${gamepad.axes.length} axes)`,
+        "ok"
+      );
       continue;
     }
 
@@ -1033,6 +1157,10 @@ function processGamepads() {
           button.pressed ? 1 : 0,
           Math.round(button.value * 255)
         );
+        setGamepadState(
+          `button #${buttonIndex} on #${index}: ${button.pressed ? "pressed" : "released"} (${button.value.toFixed(2)})`,
+          "ok"
+        );
       }
     }
 
@@ -1043,6 +1171,7 @@ function processGamepads() {
 
       const [lo, hi] = axisToBytes(currentValue);
       setGamepadData(GAMEPAD_EVENT.axis, index, axisIndex, lo, hi);
+      setGamepadState(`axis #${axisIndex} on #${index}: ${currentValue.toFixed(2)}`, "ok");
     }
 
     gamepadSnapshots.set(index, cloneGamepadState(gamepad));
@@ -1066,16 +1195,19 @@ function processGamepads() {
     setGamepadState("waiting", "warn");
   }
 
-  gamepadLoopHandle = requestAnimationFrame(processGamepads);
 }
 
 function setupGamepadBridge() {
   if (!("getGamepads" in navigator)) {
     setGamepadState("Gamepad API not supported", "warn");
+    setGamepadPollingState("unavailable", "warn");
+    setGamepadLiveDisplay("unavailable", "warn");
     return;
   }
 
   setGamepadState("waiting", "warn");
+  setGamepadPollingState("ready", "warn");
+  setGamepadLiveDisplay("pads:0 X:0.00 Y:0.00 B0:0", "warn");
   window.addEventListener("gamepadconnected", (event) => {
     setGamepadState(`connected #${event.gamepad.index}`, "ok");
   });
@@ -1083,8 +1215,12 @@ function setupGamepadBridge() {
     setGamepadState(`disconnected #${event.gamepad.index}`, "warn");
   });
 
-  if (!gamepadLoopHandle) {
-    gamepadLoopHandle = requestAnimationFrame(processGamepads);
+  if (!gamepadPollLoop) {
+    gamepadPollLoop = createAsyncLoop(GAMEPAD_POLL_INTERVAL_MS, () => {
+      processGamepads();
+    });
+    gamepadPollLoop.start();
+    setGamepadPollingState(`polling @ ${GAMEPAD_POLL_INTERVAL_MS}ms`, "ok");
   }
 }
 
@@ -1093,7 +1229,7 @@ function setupConfig() {
   vcu2AiStatusId = loadVcu2AiStatusId();
   slcanBitrateCode = loadSlcanBitrateCode();
   setFrameConfigState(describePeriodicFrames(periodicFrames), periodicFrames.length ? "ok" : "warn");
-  setRxConfigState(`decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
+  setRxConfigState(`VCU2AI_Status ${formatCanId(vcu2AiStatusId)}`, "ok");
 
   if (!window.CanEncoding) {
     setFrameConfigState("CAN encoding unavailable", "warn");
@@ -1103,18 +1239,25 @@ function setupConfig() {
   if (!window.ControlLogic?.create) {
     setLogicConfigState("control logic unavailable", "warn");
     setAsStateDisplay("unavailable", "warn");
+    refreshOutputStateDisplay();
     controlLogic = null;
     return;
   }
 
   controlLogic = window.ControlLogic.create({
     onLogicChanged(snapshot) {
-      const extra = `AMI:${snapshot.amiState} HS:${snapshot.handshake ? 1 : 0} GO:${snapshot.goSignal ? 1 : 0} MS:${snapshot.missionStatus} T:${snapshot.missionTimer}`;
-      setAsStateDisplay(`${snapshot.label} ${extra}`, "ok");
+      const stateSummary = [
+        `AS_STATE:${snapshot.asState}`,
+        `AMI_STATE:${snapshot.amiState}`,
+        `HANDSHAKE:${snapshot.handshake ? 1 : 0}`,
+        `GO_SIGNAL:${snapshot.goSignal ? 1 : 0}`,
+      ].join(" ");
+      setAsStateDisplay(stateSummary, "ok");
     },
   });
 
-  setLogicConfigState(`switch(AS_STATE), source VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
+  setLogicConfigState(`switch(AS_STATE), source VCU2AI_Status ${formatCanId(vcu2AiStatusId)}`, "ok");
+  refreshOutputStateDisplay();
   refreshCanDebugData();
 }
 
@@ -1158,8 +1301,10 @@ function setupSerialBridge() {
 }
 
 function main() {
+  setAppVersion(APP_BUILD_VERSION, "ok");
   void cleanupLegacyPwaArtifacts();
   void registerServiceWorker();
+  setupCollapsiblePanels();
   setupConfig();
   startMissionTimerLoop();
   startSerialLoadMonitorLoop();

@@ -240,10 +240,11 @@ function decodeVcu2AiStatusFields(data) {
 function applyReceivedFrame(frame) {
   if (!frame) return;
 
+  const displayId = formatTrackedCanId(frame.id) ?? "(invalid-id)";
   vcu2AiStatusData.matchedId = frame.id;
   vcu2AiStatusData.lastPayloadBytes = frame.data.slice();
   vcu2AiStatusData.lastTimestamp = formatTimestampForEncoding();
-  vcu2AiStatusData.lastDisplayText = `${vcu2AiStatusData.lastTimestamp} ${formatPayloadBytes(frame.data)}`;
+  vcu2AiStatusData.lastDisplayText = `${vcu2AiStatusData.lastTimestamp} ${displayId} ${formatPayloadBytes(frame.data)}`;
 
   decodeVcu2AiStatusFields(frame.data);
 }

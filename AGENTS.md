@@ -10,12 +10,12 @@ Last updated: February 28, 2026
   - SLCAN
 - The app is installable as a minimal PWA and supports offline shell caching.
 - Runtime behavior:
-  - polls the gamepad continuously
+  - polls the gamepad on a fixed `10 ms` loop
   - transmits 4 periodic CAN frames
   - receives all CAN traffic the adapter forwards
   - decodes `VCU2AI_Status_ID` (`0x520`) into control globals
   - runs control logic from `switch (AS_STATE)`
-  - exposes live debug and serial-traffic views
+  - exposes lightweight live gamepad, debug, and serial-traffic views
   - estimates serial-link utilization and warns about possible overrun risk
 
 ## Main Files
@@ -284,7 +284,7 @@ Last updated: February 28, 2026
 
 ## Asynchronous Scheduling
 - Gamepad polling:
-  - uses `requestAnimationFrame`
+  - dedicated async loop every `10 ms`
 - Periodic CAN transmit:
   - one async loop per configured frame
 - Serial receive:
@@ -302,6 +302,7 @@ Last updated: February 28, 2026
 
 ## Gamepad Processing
 - The app stores per-pad snapshots in a `Map`.
+- Polling is fixed-rate, independent of paint timing.
 - It emits raw gamepad event data into `txData` when:
   - a pad connects
   - a pad disconnects
@@ -310,23 +311,40 @@ Last updated: February 28, 2026
 - Thresholds:
   - `BUTTON_EPSILON = 0.02`
   - `AXIS_EPSILON = 0.04`
+- Poll interval:
+  - `GAMEPAD_POLL_INTERVAL_MS = 10`
 - The lowest-index connected pad is treated as the primary pad for manual control globals.
+- The main UI also shows a lightweight live primary-pad sample:
+  - pad count
+  - primary `X`
+  - primary `Y`
+  - primary button 0 state
 
 ## UI Elements
 
 ### Status / Config
 - `#frameConfig`
+- `#appVersion`
 - `#rxConfig`
 - `#logicConfig`
 - `#asStateDisplay`
 - `#serialState`
 - `#gamepadState`
+- `#gamepadPollingState`
+- `#gamepadLiveDisplay`
 - `#txSchedulerState`
 - `#serialLoadState`
 - `#txCount`
 - `#lastFrame`
 - `#lastRxFrame`
 - `#adapterVersion`
+- `#missionStatusDisplay`
+- `#steerRequestDisplay`
+- `#torqueRequestDisplay`
+- `#speedRequestDisplay`
+- `#brakeRequestDisplay`
+- `#directionRequestDisplay`
+- `#estopRequestDisplay`
 
 ### Controls
 - `#serialBaudRate`
@@ -341,7 +359,15 @@ Last updated: February 28, 2026
 - `#serialConnect`
 - `#serialDisconnect`
 
+### Build Display
+- `#appVersion`
+- Set from `app.js` constant:
+  - `APP_BUILD_VERSION = "2026-02-28.1"`
+- Intended as a visible deployment/build marker so stale hosted shells are obvious.
+
 ### Serial Console
+- Container:
+  - `#serialConsolePanel`
 - `#serialConsole`
 - Intended to mirror actual serial-port traffic only.
 - Displays:
@@ -352,8 +378,12 @@ Last updated: February 28, 2026
   - `<BEL>`
 - Includes timestamps.
 - It does not display derived `ACK` or internal `SYS` status messages anymore.
+- Rendering is skipped while the `<details>` panel is closed.
+- Opening the panel renders the current buffered log immediately.
 
 ### Debug Panel
+- Container:
+  - `#debugGlobalsPanel`
 - `#canDebugData`
 - Displays a live JSON snapshot including:
   - RX decode target ID
@@ -364,6 +394,20 @@ Last updated: February 28, 2026
   - packed payload hex for each configured TX frame
   - current primary gamepad globals
   - `controlLogicData`
+- Rendering is skipped while the `<details>` panel is closed.
+- When open, rendering is throttled to `10 Hz` (`100 ms`).
+- Opening the panel forces an immediate refresh.
+
+### Main Output Display
+- Separate always-visible lines are shown for:
+  - `MISSION_STATUS`
+  - `STEER_REQUEST`
+  - `TORQUE_REQUEST`
+  - `SPEED_REQUEST`
+  - `BRAKE_REQUEST`
+  - `DIRECTION_REQUEST`
+  - `ESTOP_REQUEST`
+- `mission_timer` still exists in logic, but is no longer shown in the separate output list.
 
 ## Serial / SLCAN Behavior
 - WebSerial port open baud rate:
@@ -414,6 +458,9 @@ Last updated: February 28, 2026
   - all received frame IDs are still counted in `rxFrameStats`
   - `z` is treated as adapter TX / auto-forwarding feedback, not as a CAN frame
   - when `z` is seen, the app stops `A` polling and assumes the adapter is auto-forwarding RX data
+- Last-frame UI formatting:
+  - `#lastFrame` is shown as `timestamp CAN_ID payload-bytes`, not as raw SLCAN
+  - `#lastRxFrame` is shown as `timestamp CAN_ID payload-bytes`
 
 ## Serial Load Warning
 - The UI exposes `#serialLoadState`.
@@ -441,7 +488,7 @@ Last updated: February 28, 2026
     - `icons/icon-192.svg`
     - `icons/icon-512.svg`
 - `sw.js` cache name:
-  - `gamepad-can-bridge-shell-v2`
+  - `gamepad-can-bridge-shell-v3`
 - `sw.js` behavior:
   - precaches the app shell and icons
   - network-first for navigations
