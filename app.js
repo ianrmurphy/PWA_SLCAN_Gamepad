@@ -100,6 +100,10 @@ function setGamepadLiveDisplay(text, className) {
   setCodeState("gamepadLiveDisplay", text, className);
 }
 
+function setPageFocusState(text, className) {
+  setCodeState("pageFocusState", text, className);
+}
+
 function setSchedulerState(text, className) {
   setCodeState("txSchedulerState", text, className);
 }
@@ -1224,6 +1228,30 @@ function setupGamepadBridge() {
   }
 }
 
+function refreshPageFocusState() {
+  const isVisible = document.visibilityState === "visible";
+  const hasFocus = document.hasFocus();
+
+  if (!isVisible) {
+    setPageFocusState("hidden", "warn");
+    return;
+  }
+
+  if (hasFocus) {
+    setPageFocusState("focused", "ok");
+    return;
+  }
+
+  setPageFocusState("visible, unfocused", "warn");
+}
+
+function setupPageFocusMonitoring() {
+  refreshPageFocusState();
+  document.addEventListener("visibilitychange", refreshPageFocusState);
+  window.addEventListener("focus", refreshPageFocusState);
+  window.addEventListener("blur", refreshPageFocusState);
+}
+
 function setupConfig() {
   periodicFrames = loadPeriodicFrames();
   vcu2AiStatusId = loadVcu2AiStatusId();
@@ -1305,6 +1333,7 @@ function main() {
   void cleanupLegacyPwaArtifacts();
   void registerServiceWorker();
   setupCollapsiblePanels();
+  setupPageFocusMonitoring();
   setupConfig();
   startMissionTimerLoop();
   startSerialLoadMonitorLoop();

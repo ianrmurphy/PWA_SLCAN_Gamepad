@@ -337,6 +337,10 @@ Last updated: February 28, 2026
   - primary `X`
   - primary `Y`
   - primary button 0 state
+- The main UI also shows page focus state:
+  - `focused`
+  - `visible, unfocused`
+  - `hidden`
 
 ## UI Elements
 
@@ -350,6 +354,7 @@ Last updated: February 28, 2026
 - `#gamepadState`
 - `#gamepadPollingState`
 - `#gamepadLiveDisplay`
+- `#pageFocusState`
 - `#txSchedulerState`
 - `#serialLoadState`
 - `#txCount`
@@ -538,13 +543,20 @@ Last updated: February 28, 2026
    - decoded globals update in `#canDebugData`
 10. Confirm `rxFrameStats.countsById` grows dynamically from real bus traffic and resets after reconnect.
 11. Move the gamepad and confirm:
-   - `GAMEPAD_X_AXIS` and `GAMEPAD_Y_AXIS` update in `#canDebugData`
-   - manual `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` change as expected
-12. Install through the browser UI and verify the app opens standalone.
-13. After one online load, test offline shell availability by disconnecting network and reloading.
+    - `GAMEPAD_X_AXIS` and `GAMEPAD_Y_AXIS` update in `#canDebugData`
+    - manual `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` change as expected
+    - `#gamepadLiveDisplay` updates even when `Debug globals` is closed
+12. Verify page focus behavior:
+    - `#pageFocusState` shows `focused` when the app window is active
+    - `#pageFocusState` changes to `visible, unfocused` or `hidden` when focus is lost
+    - gamepad reliability should be evaluated only while `#pageFocusState` is `focused`
+13. Install through the browser UI and verify the app opens standalone.
+14. After one online load, test offline shell availability by disconnecting network and reloading.
 
 ## Constraints / Notes
 - WebSerial requires a secure context and a user gesture.
+- Gamepad input is most reliable only while the app page is focused and visible.
+- If the page is unfocused or hidden, browser throttling can make Gamepad API polling inconsistent.
 - TX only emits standard 11-bit SLCAN frames.
 - RX parsing supports both standard and extended SLCAN receive frames.
 - The service worker provides offline shell behavior, not guaranteed offline hardware access.
