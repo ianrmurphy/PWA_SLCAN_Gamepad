@@ -21,6 +21,7 @@
       .muted { color: #6b7280; font-size: .9rem; }
       code { background: #f3f4f6; padding: .1rem .25rem; border-radius: 6px; }
       pre { margin: .75rem 0 0; padding: .75rem; border-radius: 10px; background: #f8fafc; border: 1px solid #e5e7eb; overflow-x: auto; font-size: .85rem; line-height: 1.35; }
+      #serialConsole { max-height: 16rem; overflow-y: auto; background: #020617; color: #e2e8f0; border-color: #1e293b; }
       .ok { color: #065f46; }
       .warn { color: #92400e; }
     </style>
@@ -45,17 +46,13 @@
       </p>
 
       <div class="row">
-        <label class="muted" for="slcanBitrate" style="min-width: 5rem;">Bitrate</label>
-        <select id="slcanBitrate">
-          <option value="0">10 kbps (S0)</option>
-          <option value="1">20 kbps (S1)</option>
-          <option value="2">50 kbps (S2)</option>
-          <option value="3">100 kbps (S3)</option>
-          <option value="4" selected>125 kbps (S4)</option>
-          <option value="5">250 kbps (S5)</option>
-          <option value="6">500 kbps (S6)</option>
-          <option value="7">800 kbps (S7)</option>
-          <option value="8">1 Mbps (S8)</option>
+        <label class="muted" for="serialBaudRate" style="min-width: 8rem;">Serial baud</label>
+        <select id="serialBaudRate">
+          <option value="115200">115200</option>
+          <option value="250000">250000</option>
+          <option value="500000">500000</option>
+          <option value="1000000">1000000</option>
+          <option value="2000000" selected>2000000</option>
         </select>
       </div>
 
@@ -66,7 +63,8 @@
       <p class="muted">
         Serial: <code id="serialState">not connected</code> &bull;
         Gamepad: <code id="gamepadState">waiting</code> &bull;
-        Scheduler: <code id="txSchedulerState">stopped</code>
+        Scheduler: <code id="txSchedulerState">stopped</code> &bull;
+        Serial load: <code id="serialLoadState">idle</code>
       </p>
       <p class="muted">
         Frames sent: <code id="txCount">0</code> &bull;
@@ -75,6 +73,9 @@
       <p class="muted">
         Last RX: <code id="lastRxFrame">-</code>
       </p>
+
+      <p class="muted">Serial console</p>
+      <pre id="serialConsole">waiting for serial traffic...</pre>
 
       <p class="muted">CAN debug globals</p>
       <pre id="canDebugData">loading...</pre>

@@ -1,5 +1,10 @@
 // Editable application config.
 window.APP_CONFIG = {
+  serial: {
+    // SLCAN bitrate code (S0..S8). Default is 500 kbps (S6).
+    slcanBitrate: 6,
+  },
+
   can: {
     // Periodic transmit schedule.
     // `id` accepts hex string (with or without "0x") or number.

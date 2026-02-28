@@ -1,10 +1,14 @@
 const $ = (id) => document.getElementById(id);
 
-const SERIAL_BAUD_RATE = 115200;
+const DEFAULT_SERIAL_BAUD_RATE = 2000000;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
 const MAX_SERIAL_QUEUE = 512;
 const MISSION_TIMER_TICK_MS = 10;
+const SLCAN_ACK_TIMEOUT_MS = 750;
+const MAX_SERIAL_LOG_LINES = 200;
+const SERIAL_RX_POLL_INTERVAL_MS = 20;
+const SERIAL_LOAD_SAMPLE_MS = 1000;
 
 const DEFAULT_PERIODIC_FRAMES = [
   { id: 0x510, intervalMs: 20 },
@@ -27,6 +31,8 @@ let serialQueue = [];
 let serialDrainPromise = null;
 let serialReadLoopPromise = null;
 let serialReadBuffer = "";
+let serialAckWaiters = [];
+let serialLogLines = [];
 const serialEncoder = new TextEncoder();
 const serialDecoder = new TextDecoder();
 
@@ -39,6 +45,13 @@ let periodicFrames = [];
 let canTxLoops = [];
 let controlLogic = null;
 let vcu2AiStatusId = 0x520;
+let slcanBitrateCode = "6";
+let serialReceivePollLoop = null;
+let slcanAutoPollEnabled = false;
+let serialLoadMonitorLoop = null;
+let serialLoadWindowStartedAt = performance.now();
+let serialRxBytesSinceSample = 0;
+let serialTxBytesSinceSample = 0;
 let missionTimerLoop = null;
 
 async function cleanupLegacyPwaArtifacts() {
@@ -68,6 +81,10 @@ function setGamepadState(text, className) {
 
 function setSchedulerState(text, className) {
   setCodeState("txSchedulerState", text, className);
+}
+
+function setSerialLoadState(text, className) {
+  setCodeState("serialLoadState", text, className);
 }
 
 function setFrameConfigState(text, className) {
@@ -102,6 +119,27 @@ function setCanDebugData(value) {
   const elem = $("canDebugData");
   if (!elem) return;
   elem.textContent = value;
+}
+
+function setSerialConsoleData(value) {
+  const elem = $("serialConsole");
+  if (!elem) return;
+  elem.textContent = value;
+  elem.scrollTop = elem.scrollHeight;
+}
+
+function refreshSerialConsole() {
+  setSerialConsoleData(serialLogLines.length ? serialLogLines.join("\n") : "waiting for serial traffic...");
+}
+
+function appendSerialLog(direction, text) {
+  const now = new Date();
+  const timestamp = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}.${String(now.getMilliseconds()).padStart(3, "0")}`;
+  serialLogLines.push(`${timestamp} ${direction} ${text}`);
+  if (serialLogLines.length > MAX_SERIAL_LOG_LINES) {
+    serialLogLines.splice(0, serialLogLines.length - MAX_SERIAL_LOG_LINES);
+  }
+  refreshSerialConsole();
 }
 
 function parseCanIdValue(value) {
@@ -197,6 +235,15 @@ function buildCanDebugSnapshot() {
         lastTimestamp: appGlobals.vcu2AiStatusData?.lastTimestamp ?? "",
         lastPayloadHex: formatPayloadHex(appGlobals.vcu2AiStatusData?.lastPayloadBytes),
       },
+      rxFrameStats: {
+        totalFrames: appGlobals.rxFrameStats?.totalFrames ?? 0,
+        lastSeenId:
+          typeof appGlobals.rxFrameStats?.lastSeenId === "number"
+            ? formatCanId(appGlobals.rxFrameStats.lastSeenId)
+            : null,
+        lastSeenTimestamp: appGlobals.rxFrameStats?.lastSeenTimestamp ?? "",
+        countsById: appGlobals.rxFrameStats?.countsById ?? {},
+      },
     },
     canTx: {
       sourceGlobals: {
@@ -231,20 +278,130 @@ function isSerialConnected() {
 function updateSerialUI() {
   const connectBtn = $("serialConnect");
   const disconnectBtn = $("serialDisconnect");
+  const baudRateSelect = $("serialBaudRate");
   const webSerialSupported = "serial" in navigator;
 
   if (connectBtn) connectBtn.disabled = !webSerialSupported || isSerialConnected();
   if (disconnectBtn) disconnectBtn.disabled = !isSerialConnected();
+  if (baudRateSelect) baudRateSelect.disabled = !webSerialSupported || isSerialConnected();
 }
 
-function getBitrateCode() {
-  const value = $("slcanBitrate")?.value ?? "4";
-  return /^[0-8]$/.test(value) ? value : "4";
+function loadSlcanBitrateCode() {
+  const value = String(window.APP_CONFIG?.serial?.slcanBitrate ?? "6");
+  return /^[0-8]$/.test(value) ? value : "6";
+}
+
+function getSerialBaudRate() {
+  const rawValue = $("serialBaudRate")?.value ?? String(DEFAULT_SERIAL_BAUD_RATE);
+  const parsed = Number.parseInt(rawValue, 10);
+  if (![115200, 250000, 500000, 1000000, 2000000].includes(parsed)) {
+    return DEFAULT_SERIAL_BAUD_RATE;
+  }
+  return parsed;
+}
+
+function resetSerialLoadStats() {
+  serialLoadWindowStartedAt = performance.now();
+  serialRxBytesSinceSample = 0;
+  serialTxBytesSinceSample = 0;
+}
+
+function recordSerialTraffic(direction, byteCount) {
+  const bytes = Number(byteCount);
+  if (!Number.isFinite(bytes) || bytes <= 0) return;
+
+  if (direction === "rx") {
+    serialRxBytesSinceSample += bytes;
+    return;
+  }
+
+  if (direction === "tx") {
+    serialTxBytesSinceSample += bytes;
+  }
+}
+
+function sampleSerialLoad() {
+  const now = performance.now();
+  const elapsedMs = Math.max(1, now - serialLoadWindowStartedAt);
+  const rxBytes = serialRxBytesSinceSample;
+  const txBytes = serialTxBytesSinceSample;
+  resetSerialLoadStats();
+
+  if (!isSerialConnected()) {
+    setSerialLoadState("idle", "");
+    return;
+  }
+
+  const baudRate = getSerialBaudRate();
+  const totalBitsPerSecond = ((rxBytes + txBytes) * 10 * 1000) / elapsedMs;
+  const utilization = baudRate > 0 ? totalBitsPerSecond / baudRate : 0;
+  const utilizationText = `${Math.round(utilization * 100)}%`;
+  const rxRate = Math.round((rxBytes * 1000) / elapsedMs);
+  const txRate = Math.round((txBytes * 1000) / elapsedMs);
+
+  if (utilization >= 0.85) {
+    setSerialLoadState(`high ${utilizationText} (overrun risk, rx ${rxRate}B/s tx ${txRate}B/s)`, "warn");
+    return;
+  }
+
+  if (utilization >= 0.65) {
+    setSerialLoadState(`elevated ${utilizationText} (rx ${rxRate}B/s tx ${txRate}B/s)`, "warn");
+    return;
+  }
+
+  setSerialLoadState(`${utilizationText} (rx ${rxRate}B/s tx ${txRate}B/s)`, "ok");
 }
 
 async function sendSlcanCommand(command) {
+  const waitForAck = arguments[1]?.waitForAck ?? false;
+  const allowAckError = arguments[1]?.allowAckError ?? false;
+  const ackTimeoutMs = arguments[1]?.ackTimeoutMs ?? SLCAN_ACK_TIMEOUT_MS;
   if (!serialWriter) throw new Error("SLCAN writer is not available");
-  await serialWriter.write(serialEncoder.encode(`${command}\r`));
+
+  let waiter = null;
+  let ackPromise = null;
+
+  if (waitForAck) {
+    ackPromise = new Promise((resolve, reject) => {
+      waiter = {
+        command,
+        allowAckError,
+        resolve,
+        reject,
+        timeoutHandle: 0,
+      };
+      waiter.timeoutHandle = window.setTimeout(() => {
+        const index = serialAckWaiters.indexOf(waiter);
+        if (index >= 0) {
+          serialAckWaiters.splice(index, 1);
+        }
+        reject(new Error(`SLCAN command "${command}" timed out waiting for acknowledgement`));
+      }, ackTimeoutMs);
+      serialAckWaiters.push(waiter);
+    });
+  }
+
+  try {
+    appendSerialLog("TX", command);
+    const encoded = serialEncoder.encode(`${command}\r`);
+    await serialWriter.write(encoded);
+    recordSerialTraffic("tx", encoded.length);
+  } catch (e) {
+    if (waiter) {
+      const index = serialAckWaiters.indexOf(waiter);
+      if (index >= 0) {
+        serialAckWaiters.splice(index, 1);
+      }
+      clearTimeout(waiter.timeoutHandle);
+    }
+    throw e;
+  }
+
+  if (ackPromise) {
+    return ackPromise;
+  }
+
+  return true;
 }
 
 function resetSerialQueue() {
@@ -252,8 +409,87 @@ function resetSerialQueue() {
   serialDrainPromise = null;
 }
 
-function queueSerialLine(line) {
+function rejectSerialAckWaiter(waiter, error) {
+  if (!waiter) return;
+  clearTimeout(waiter.timeoutHandle);
+  waiter.reject(error);
+}
+
+function resolveSerialAckWaiter(waiter, value) {
+  if (!waiter) return;
+  clearTimeout(waiter.timeoutHandle);
+  waiter.resolve(value);
+}
+
+function clearSerialAckWaiters(reason = "serial acknowledgements cleared") {
+  const pendingWaiters = serialAckWaiters;
+  serialAckWaiters = [];
+  for (const waiter of pendingWaiters) {
+    rejectSerialAckWaiter(waiter, new Error(reason));
+  }
+}
+
+function settleNextSerialAck(success) {
+  const waiter = serialAckWaiters.shift();
+  if (!waiter) {
+    if (!success) {
+      console.debug("Ignoring unsolicited SLCAN error acknowledgement");
+    }
+    return;
+  }
+
+  if (success || waiter.allowAckError) {
+    resolveSerialAckWaiter(waiter, success);
+    return;
+  }
+
+  rejectSerialAckWaiter(
+    waiter,
+    new Error(`SLCAN command "${waiter.command}" rejected by adapter`)
+  );
+}
+
+function matchPendingAckLine(trimmedLine) {
+  const waiter = serialAckWaiters[0];
+  if (!waiter) return false;
+
+  const upperLine = trimmedLine.toUpperCase();
+  if (upperLine === "OK") {
+    settleNextSerialAck(true);
+    return true;
+  }
+
+  if (upperLine === "ERROR" || upperLine === "ERR") {
+    settleNextSerialAck(false);
+    return true;
+  }
+
+  if (upperLine === waiter.command.toUpperCase()) {
+    settleNextSerialAck(true);
+    return true;
+  }
+
+  return false;
+}
+
+async function configureSlcanReceiveFilter() {
+  try {
+    await sendSlcanCommand("M00000000", { waitForAck: true });
+    await sendSlcanCommand("mFFFFFFFF", { waitForAck: true });
+    setRxConfigState(`adapter open, decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
+  } catch (e) {
+    console.warn("SLCAN receive filter setup skipped", e);
+    setRxConfigState(`adapter RX unknown, decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "warn");
+  }
+}
+
+function queueSerialLine(line, options) {
   if (!isSerialConnected()) return;
+
+  const logTraffic = options?.log !== false;
+  if (logTraffic) {
+    appendSerialLog("TX", line);
+  }
 
   if (serialQueue.length >= MAX_SERIAL_QUEUE) {
     serialQueue.shift();
@@ -275,7 +511,9 @@ function queueSerialLine(line) {
 async function drainSerialQueue() {
   while (serialQueue.length && serialWriter) {
     const next = serialQueue.shift();
-    await serialWriter.write(serialEncoder.encode(next));
+    const encoded = serialEncoder.encode(next);
+    await serialWriter.write(encoded);
+    recordSerialTraffic("tx", encoded.length);
   }
 }
 
@@ -291,23 +529,92 @@ function refreshControlLogicDisplay() {
   refreshCanDebugData();
 }
 
-function consumeSerialInput(chunk) {
-  serialReadBuffer += serialDecoder.decode(chunk, { stream: true });
-
-  while (true) {
-    const boundaryIndex = serialReadBuffer.search(/[\r\n]/);
-    if (boundaryIndex < 0) break;
-
-    const rawLine = serialReadBuffer.slice(0, boundaryIndex).trim();
-    serialReadBuffer = serialReadBuffer.slice(boundaryIndex + 1);
-
-    if (!rawLine) continue;
-
-    const matchedFrame = window.CanEncoding?.tryConsumeIncomingLine(rawLine, vcu2AiStatusId);
-    if (matchedFrame) {
-      setLastRxFrame(window.AppGlobals.vcu2AiStatusData.lastDisplayText, "ok");
-      refreshControlLogicDisplay();
+function processSerialLine(rawLine) {
+  const trimmedLine = rawLine.trim();
+  if (!trimmedLine) {
+    if (serialAckWaiters.length) {
+      appendSerialLog("RX", "<CR>");
     }
+    settleNextSerialAck(true);
+    return;
+  }
+
+  appendSerialLog("RX", trimmedLine);
+
+  if (matchPendingAckLine(trimmedLine)) {
+    return;
+  }
+
+  if (trimmedLine === "z" || trimmedLine === "Z") {
+    if (!slcanAutoPollEnabled) {
+      slcanAutoPollEnabled = true;
+      stopSerialReceivePolling();
+    }
+    return;
+  }
+
+  if (trimmedLine === "A") {
+    return;
+  }
+
+  let sawFrame = false;
+  let matchedFrame = null;
+  for (let offset = 0; offset < trimmedLine.length; offset += 1) {
+    const marker = trimmedLine[offset];
+    if (marker !== "t" && marker !== "T") continue;
+
+    const candidateLine = trimmedLine.slice(offset);
+    const parsedFrame = window.CanEncoding?.parseIncomingSlcanFrame?.(candidateLine) ?? null;
+    if (!parsedFrame) continue;
+
+    sawFrame = true;
+    matchedFrame = window.CanEncoding?.tryConsumeIncomingLine(candidateLine, vcu2AiStatusId) ?? null;
+    if (matchedFrame || parsedFrame) {
+      break;
+    }
+  }
+
+  if (matchedFrame) {
+    setLastRxFrame(window.AppGlobals.vcu2AiStatusData.lastDisplayText, "ok");
+    refreshControlLogicDisplay();
+    return;
+  }
+
+  if (sawFrame) {
+    refreshCanDebugData();
+  }
+}
+
+function consumeSerialInput(chunk) {
+  recordSerialTraffic("rx", chunk?.length ?? 0);
+  const decoded = serialDecoder.decode(chunk, { stream: true });
+
+  for (const char of decoded) {
+    if (char === "\r") {
+      processSerialLine(serialReadBuffer);
+      serialReadBuffer = "";
+      continue;
+    }
+
+    if (char === "\n") {
+      if (serialReadBuffer.length) {
+        processSerialLine(serialReadBuffer);
+        serialReadBuffer = "";
+      }
+      continue;
+    }
+
+    if (char === "\u0007") {
+      if (serialReadBuffer.length) {
+        processSerialLine(serialReadBuffer);
+        serialReadBuffer = "";
+      }
+      appendSerialLog("RX", "<BEL>");
+      settleNextSerialAck(false);
+      continue;
+    }
+
+    serialReadBuffer += char;
   }
 }
 
@@ -387,6 +694,36 @@ function createAsyncLoop(intervalMs, task) {
       }
     },
   };
+}
+
+function stopSerialReceivePolling() {
+  if (serialReceivePollLoop) {
+    serialReceivePollLoop.stop();
+    serialReceivePollLoop = null;
+  }
+}
+
+function startSerialReceivePolling() {
+  stopSerialReceivePolling();
+
+  if (!isSerialConnected() || slcanAutoPollEnabled) return;
+
+  serialReceivePollLoop = createAsyncLoop(SERIAL_RX_POLL_INTERVAL_MS, async () => {
+    if (!isSerialConnected()) return;
+    if (serialQueue.length >= MAX_SERIAL_QUEUE) return;
+    queueSerialLine("A", { log: false });
+  });
+  serialReceivePollLoop.start();
+}
+
+function startSerialLoadMonitorLoop() {
+  if (serialLoadMonitorLoop) return;
+
+  resetSerialLoadStats();
+  serialLoadMonitorLoop = createAsyncLoop(SERIAL_LOAD_SAMPLE_MS, () => {
+    sampleSerialLoad();
+  });
+  serialLoadMonitorLoop.start();
 }
 
 function tickMissionTimer() {
@@ -484,14 +821,34 @@ function startPeriodicTransmit() {
 
 async function disconnectSerial(stateText = "not connected", stateClass = "warn", sendClose = true) {
   stopPeriodicTransmit();
+  stopSerialReceivePolling();
+  slcanAutoPollEnabled = false;
+  resetSerialLoadStats();
 
   const port = serialPort;
   const writer = serialWriter;
   const reader = serialReader;
   const readLoop = serialReadLoopPromise;
+
+  if (sendClose && writer) {
+    if (reader) {
+      try {
+        await sendSlcanCommand("C", { waitForAck: true, allowAckError: true, ackTimeoutMs: 150 });
+      } catch {}
+    } else {
+      try {
+        appendSerialLog("TX", "C");
+        const encoded = serialEncoder.encode("C\r");
+        await writer.write(encoded);
+        recordSerialTraffic("tx", encoded.length);
+      } catch {}
+    }
+  }
+
   serialPort = null;
   serialWriter = null;
   serialReader = null;
+  clearSerialAckWaiters("serial disconnected");
   resetSerialQueue();
   serialReadBuffer = "";
   updateSerialUI();
@@ -509,12 +866,6 @@ async function disconnectSerial(stateText = "not connected", stateClass = "warn"
   }
 
   if (writer) {
-    if (sendClose) {
-      try {
-        await writer.write(serialEncoder.encode("C\r"));
-      } catch {}
-    }
-
     try {
       writer.releaseLock();
     } catch {}
@@ -527,6 +878,9 @@ async function disconnectSerial(stateText = "not connected", stateClass = "warn"
   }
 
   setSerialState(stateText, stateClass);
+  if (!isSerialConnected()) {
+    setSerialLoadState("idle", "");
+  }
 }
 
 async function connectSerial() {
@@ -546,7 +900,7 @@ async function connectSerial() {
   try {
     setSerialState("requesting port...", "warn");
     const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: SERIAL_BAUD_RATE });
+    await port.open({ baudRate: getSerialBaudRate() });
 
     const writer = port.writable?.getWriter();
     if (!writer) throw new Error("serial port is not writable");
@@ -555,13 +909,43 @@ async function connectSerial() {
     serialWriter = writer;
     resetSerialQueue();
     startSerialReadLoop();
+    resetSerialLoadStats();
+    window.CanEncoding?.resetReceivedFrameStats?.();
     txCount = 0;
     setTxCount(0);
     setLastFrame("-");
     setLastRxFrame("-", "");
+    refreshCanDebugData();
 
-    await sendSlcanCommand(`S${getBitrateCode()}`);
-    await sendSlcanCommand("O");
+    try {
+      await sendSlcanCommand("C", { waitForAck: true, allowAckError: true, ackTimeoutMs: 150 });
+    } catch (e) {
+      const message = e?.message ?? String(e);
+      if (!message.includes('timed out waiting for acknowledgement')) {
+        throw e;
+      }
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    await sendSlcanCommand(`S${slcanBitrateCode}`, { waitForAck: true });
+    await configureSlcanReceiveFilter();
+
+    slcanAutoPollEnabled = false;
+    try {
+      await sendSlcanCommand("X1", { waitForAck: true, ackTimeoutMs: 150 });
+      slcanAutoPollEnabled = true;
+    } catch (e) {
+      const message = e?.message ?? String(e);
+      if (message.includes('timed out waiting for acknowledgement') || message.includes('rejected')) {
+      } else {
+        throw e;
+      }
+    }
+
+    await sendSlcanCommand("O", { waitForAck: true });
+
+    if (!slcanAutoPollEnabled) {
+      startSerialReceivePolling();
+    }
 
     startPeriodicTransmit();
     setSerialState("connected (channel open)", "ok");
@@ -693,8 +1077,9 @@ function setupGamepadBridge() {
 function setupConfig() {
   periodicFrames = loadPeriodicFrames();
   vcu2AiStatusId = loadVcu2AiStatusId();
+  slcanBitrateCode = loadSlcanBitrateCode();
   setFrameConfigState(describePeriodicFrames(periodicFrames), periodicFrames.length ? "ok" : "warn");
-  setRxConfigState(`VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
+  setRxConfigState(`decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
 
   if (!window.CanEncoding) {
     setFrameConfigState("CAN encoding unavailable", "warn");
@@ -733,6 +1118,8 @@ function setupSerialBridge() {
   }
 
   setSerialState("ready to connect", "warn");
+  setSerialLoadState("idle", "");
+  refreshSerialConsole();
   setSchedulerState("stopped", "warn");
   setTxCount(0);
   setLastFrame("-");
@@ -760,6 +1147,7 @@ function main() {
   void registerServiceWorker();
   setupConfig();
   startMissionTimerLoop();
+  startSerialLoadMonitorLoop();
   setupSerialBridge();
   setupGamepadBridge();
 }

@@ -1,6 +1,6 @@
 # Gamepad to CAN Bridge Agent Context
 
-Last updated: February 27, 2026
+Last updated: February 28, 2026
 
 ## Project Summary
 - This repo is a static browser app with no build step and no framework.
@@ -8,13 +8,15 @@ Last updated: February 27, 2026
   - HTML5 Gamepad API
   - WebSerial
   - SLCAN
-- The app is installable again as a minimal PWA and supports offline shell caching.
+- The app is installable as a minimal PWA and supports offline shell caching.
 - Runtime behavior:
   - polls the gamepad continuously
   - transmits 4 periodic CAN frames
-  - receives and decodes one CAN status frame
+  - receives all CAN traffic the adapter forwards
+  - decodes `VCU2AI_Status_ID` (`0x520`) into control globals
   - runs control logic from `switch (AS_STATE)`
-  - exposes a live debug view of RX/TX globals and packed payloads
+  - exposes live debug and serial-traffic views
+  - estimates serial-link utilization and warns about possible overrun risk
 
 ## Main Files
 - `index.html`
@@ -38,7 +40,7 @@ Last updated: February 27, 2026
   - Consumes globals and writes request globals.
 - `app.js`
   - Main runtime orchestration.
-  - Owns WebSerial, serial read/write loops, gamepad polling, timer loops, UI updates, PWA service worker registration.
+  - Owns WebSerial, serial read/write loops, gamepad polling, timer loops, UI updates, and service worker registration.
 - `manifest.webmanifest`
   - PWA manifest for installability.
 - `sw.js`
@@ -49,17 +51,20 @@ Last updated: February 27, 2026
   - High-level usage notes.
 
 ## Config
-- `config.js` defines `window.APP_CONFIG.can`.
+- `config.js` defines `window.APP_CONFIG`.
 
-### CAN Config Keys
-- `periodicFrames`
+### Config Keys
+- `serial.slcanBitrate`
+  - SLCAN CAN bitrate command code (`S0`..`S8`).
+  - Current default is `6` (`500 kbps CAN`).
+- `can.periodicFrames`
   - Array of periodic transmit frame definitions.
   - Each frame uses:
     - `id`
     - `intervalMs`
-- `vcu2AiStatusId`
-  - Receive filter ID for the VCU status frame.
-  - Canonical key is `can.vcu2AiStatusId`.
+- `can.vcu2AiStatusId`
+  - The CAN ID that the app treats as the VCU status frame for decode.
+  - Current default is `0x520`.
 
 ### Current Defaults
 - TX:
@@ -67,8 +72,10 @@ Last updated: February 27, 2026
   - `0x512 @ 20ms`
   - `0x513 @ 20ms`
   - `0x514 @ 20ms`
-- RX:
+- RX decode target:
   - `VCU2AI_Status_ID = 0x520`
+- SLCAN CAN bitrate:
+  - `S6` (`500 kbps`)
 
 ## Shared Global Data
 - `globals.js` defines `window.AppGlobals`.
@@ -98,17 +105,9 @@ Last updated: February 27, 2026
 ### Grouped Data Objects
 - `txData`
   - Stores the latest raw gamepad event payload fields.
-  - Fields:
-    - `asState`
-    - `gamepadEventType`
-    - `gamepadIndex`
-    - `controlIndex`
-    - `data0`
-    - `data1`
-    - `data2`
-    - `data3`
+  - Still exists as legacy/fallback support.
 - `vcu2AiStatusData`
-  - Stores decoded RX metadata and mirrored status values.
+  - Stores decoded `0x520` metadata and mirrored status values.
   - Fields:
     - `matchedId`
     - `lastPayloadBytes`
@@ -118,6 +117,15 @@ Last updated: February 27, 2026
     - `GO_SIGNAL`
     - `AS_STATE`
     - `AMI_STATE`
+- `rxFrameStats`
+  - Receive statistics for all CAN frames seen from the adapter.
+  - Fields:
+    - `totalFrames`
+    - `lastSeenId`
+    - `lastSeenTimestamp`
+    - `countsById`
+  - `countsById` starts empty and is populated dynamically from actual traffic.
+  - Stats are reset on each adapter reconnect.
 - `controlLogicData`
   - Stores derived control-logic state for UI/debugging.
   - Fields:
@@ -142,8 +150,11 @@ Last updated: February 27, 2026
 ### SLCAN Format
 - TX uses standard 11-bit SLCAN data frames:
   - `t{ID3hex}{DLC1hex}{DATA...}\r`
-- RX parsing currently supports only standard `t` frames.
-- Only 11-bit CAN IDs are supported.
+- RX parsing supports:
+  - standard 11-bit receive frames: `t...`
+  - extended receive frames: `T...`
+- The app only decodes `0x520` into status globals, but it counts all received frame IDs.
+- TX still only generates standard 11-bit frames.
 
 ### TX Encoding
 - `can-encoding.js` packs outgoing frames by CAN ID.
@@ -232,14 +243,14 @@ Last updated: February 27, 2026
 - Manual driving mode.
 - `MISSION_STATUS = 3` while gamepad button 0 is pressed, else `1`.
 - `STEER_REQUEST` from raw gamepad X axis:
-  - raw gamepad convention is:
+  - raw browser convention:
     - positive X = right
   - control logic intentionally inverts sign:
     - `GAMEPAD_X_AXIS >= 0.2` -> `STEER_REQUEST = -300`
     - `GAMEPAD_X_AXIS <= -0.2` -> `STEER_REQUEST = 300`
     - otherwise `0`
 - `SPEED_REQUEST` from raw gamepad Y axis:
-  - raw gamepad convention is:
+  - raw browser convention:
     - positive Y = down
   - up command:
     - `GAMEPAD_Y_AXIS < -0.2` -> `SPEED_REQUEST = 500`
@@ -282,6 +293,12 @@ Last updated: February 27, 2026
 - Mission timer:
   - dedicated async loop every `10 ms`
   - re-runs control logic on each tick
+- Serial load monitor:
+  - dedicated async loop every `1000 ms`
+  - estimates serial-link utilization from actual TX/RX byte counts
+- Serial receive polling:
+  - optional async loop every `20 ms`
+  - sends `A` when the adapter does not support/enable automatic RX forwarding
 
 ## Gamepad Processing
 - The app stores per-pad snapshots in a `Map`.
@@ -305,49 +322,100 @@ Last updated: February 27, 2026
 - `#serialState`
 - `#gamepadState`
 - `#txSchedulerState`
+- `#serialLoadState`
 - `#txCount`
 - `#lastFrame`
 - `#lastRxFrame`
 
 ### Controls
-- `#slcanBitrate`
+- `#serialBaudRate`
+  - WebSerial port open baud rate.
+  - Default UI value is `2000000`.
+  - Available options:
+    - `115200`
+    - `250000`
+    - `500000`
+    - `1000000`
+    - `2000000`
 - `#serialConnect`
 - `#serialDisconnect`
+
+### Serial Console
+- `#serialConsole`
+- Intended to mirror actual serial-port traffic only.
+- Displays:
+  - `TX` for bytes/lines written by the app
+  - `RX` for bytes/lines received from the SLCAN adapter
+- Still renders control characters as readable markers:
+  - `<CR>`
+  - `<BEL>`
+- Includes timestamps.
+- It does not display derived `ACK` or internal `SYS` status messages anymore.
 
 ### Debug Panel
 - `#canDebugData`
 - Displays a live JSON snapshot including:
-  - RX filter ID
+  - RX decode target ID
   - decoded RX globals
   - `vcu2AiStatusData`
+  - `rxFrameStats` with dynamic `countsById`
   - control output globals
-  - `txData`
   - packed payload hex for each configured TX frame
   - current primary gamepad globals
   - `controlLogicData`
 
 ## Serial / SLCAN Behavior
-- Serial open baud rate:
-  - `115200`
+- WebSerial port open baud rate:
+  - selected from `#serialBaudRate`
+  - current code fallback default is `2000000`
 - On connect:
   1. `navigator.serial.requestPort()`
-  2. `port.open({ baudRate: 115200 })`
+  2. `port.open({ baudRate: selectedSerialBaud })`
   3. acquire writer
   4. start serial read loop
-  5. send `S{bitrate}`
-  6. send `O`
-  7. start periodic TX loops
+  5. reset RX frame counters
+  6. send `C` (tolerates missing ack when already closed)
+  7. wait `50 ms`
+  8. send `S{slcanBitrate}` from config
+  9. send `M00000000`
+  10. send `mFFFFFFFF`
+  11. try `X1` while channel is still closed
+  12. send `O`
+  13. if `X1` failed, start `A` polling loop
+  14. start periodic TX loops
 - On disconnect:
   - stop periodic TX loops
+  - stop receive polling loop
+  - if possible, send `C` while reader is still alive so the response is consumed
   - cancel reader
   - await read-loop shutdown
-  - send `C` unless already handling a failure/device disconnect
   - release writer
   - close port
 - Physical USB disconnect is handled through the `navigator.serial` `disconnect` event.
 - TX queue:
   - max `512` lines
   - oldest queued line is dropped when full
+- Ack handling:
+  - accepts empty `CR`, command echo, and `OK` as success
+  - accepts `BEL`, `ERR`, and `ERROR` as command failure
+  - unsolicited `BEL` with no pending command is ignored and no longer downgrades UI state
+- RX handling:
+  - the adapter is configured open to forward all CAN frames it allows
+  - the app decodes only `0x520` as the VCU status frame
+  - all received frame IDs are still counted in `rxFrameStats`
+  - `z` is treated as adapter TX/auto mode feedback, not as a CAN frame
+
+## Serial Load Warning
+- The UI exposes `#serialLoadState`.
+- The app samples TX and RX byte counts once per second.
+- Utilization estimate uses:
+  - current selected serial baud
+  - `10 bits/byte` (`8N1` heuristic)
+- Warning thresholds:
+  - `>= 65%` -> `elevated`
+  - `>= 85%` -> `high ... (overrun risk)`
+- This is a heuristic for serial-link saturation risk.
+- It does not prove adapter-side CAN FIFO overflow.
 
 ## PWA / Offline Behavior
 - `index.html` links `manifest.webmanifest`.
@@ -363,20 +431,21 @@ Last updated: February 27, 2026
     - `icons/icon-192.svg`
     - `icons/icon-512.svg`
 - `sw.js` cache name:
-  - `gamepad-can-bridge-shell-v1`
+  - `gamepad-can-bridge-shell-v2`
 - `sw.js` behavior:
   - precaches the app shell and icons
   - network-first for navigations
-  - cache-first for same-origin static assets
+  - network-first for known shell assets
+  - cache fallback when offline
   - removes old `basic-pwa-cache-*` caches
   - removes old `gamepad-can-bridge-shell-*` versions
 - There is no in-page install button currently.
-- Install is expected through the browser’s native PWA install UI.
+- Install is expected through the browser's native PWA install UI.
 
 ## Run and Test
 1. Serve over `http://localhost` or another secure context.
 2. Open in Chromium with WebSerial and Gamepad support.
-3. Reload after editing `config.js`.
+3. Reload after editing `config.js` or after service worker-affecting JS/UI changes.
 4. Verify `Application > Manifest` shows the manifest.
 5. Verify `Application > Service Workers` shows active `sw.js`.
 6. Connect SLCAN and confirm periodic TX on:
@@ -384,18 +453,22 @@ Last updated: February 27, 2026
    - `0x512`
    - `0x513`
    - `0x514`
-7. Send `VCU2AI_Status_ID` (`0x520`) and confirm:
+7. Confirm the serial console shows actual `TX` and `RX` traffic.
+8. Confirm `Serial load` reports utilization and stays below warning thresholds for the selected serial baud.
+9. Send `VCU2AI_Status_ID` (`0x520`) and confirm:
    - `#lastRxFrame` updates
    - `#asStateDisplay` updates
    - decoded globals update in `#canDebugData`
-8. Move the gamepad and confirm:
+10. Confirm `rxFrameStats.countsById` grows dynamically from real bus traffic and resets after reconnect.
+11. Move the gamepad and confirm:
    - `GAMEPAD_X_AXIS` and `GAMEPAD_Y_AXIS` update in `#canDebugData`
    - manual `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` change as expected
-9. Install through the browser UI and verify the app opens standalone.
-10. After one online load, test offline shell availability by disconnecting network and reloading.
+12. Install through the browser UI and verify the app opens standalone.
+13. After one online load, test offline shell availability by disconnecting network and reloading.
 
 ## Constraints / Notes
 - WebSerial requires a secure context and a user gesture.
-- Only standard 11-bit SLCAN data frames are supported.
+- TX only emits standard 11-bit SLCAN frames.
+- RX parsing supports both standard and extended SLCAN receive frames.
 - The service worker provides offline shell behavior, not guaranteed offline hardware access.
 - The code intentionally uses explicit globals for fast iteration and clarity.

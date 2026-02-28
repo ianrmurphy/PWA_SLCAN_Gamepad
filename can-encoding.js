@@ -3,6 +3,7 @@
 const appGlobals = window.AppGlobals;
 const txData = appGlobals.txData;
 const vcu2AiStatusData = appGlobals.vcu2AiStatusData;
+const rxFrameStats = appGlobals.rxFrameStats;
 const controlLogicData = appGlobals.controlLogicData;
 
 const AI2VCU_STATUS_ID = 0x510;
@@ -49,6 +50,11 @@ function formatPayloadBytes(data) {
   return data
     .map((byte) => clampCanByte(byte).toString(16).toUpperCase().padStart(2, "0"))
     .join(" ");
+}
+
+function formatTrackedCanId(canId) {
+  if (!Number.isInteger(canId) || canId < 0) return null;
+  return `0x${canId.toString(16).toUpperCase()}`;
 }
 
 function updateGamepadData(eventType, padIndex, controlIndex, d0 = 0, d1 = 0, d2 = 0, d3 = 0) {
@@ -169,20 +175,35 @@ function packPeriodicTxFrame(canId) {
 
 function parseIncomingSlcanFrame(line) {
   if (typeof line !== "string" || line.length < 5) return null;
-  if (line[0] !== "t") return null;
 
-  const canId = parseCanIdValueForEncoding(line.slice(1, 4));
-  if (canId === null) return null;
+  const frameType = line[0];
+  let canId = null;
+  let dlcIndex = 0;
 
-  const dlc = Number.parseInt(line[4], 16);
+  if (frameType === "t") {
+    canId = parseCanIdValueForEncoding(line.slice(1, 4));
+    if (canId === null) return null;
+    dlcIndex = 4;
+  } else if (frameType === "T") {
+    if (line.length < 10) return null;
+    const idHex = line.slice(1, 9);
+    if (!/^[0-9A-Fa-f]{8}$/.test(idHex)) return null;
+    canId = Number.parseInt(idHex, 16);
+    if (Number.isNaN(canId) || canId < 0 || canId > 0x1fffffff) return null;
+    dlcIndex = 9;
+  } else {
+    return null;
+  }
+
+  const dlc = Number.parseInt(line[dlcIndex], 16);
   if (Number.isNaN(dlc) || dlc < 0 || dlc > 8) return null;
 
-  const expectedLength = 5 + dlc * 2;
+  const expectedLength = dlcIndex + 1 + dlc * 2;
   if (line.length < expectedLength) return null;
 
   const data = [];
   for (let index = 0; index < dlc; index += 1) {
-    const offset = 5 + index * 2;
+    const offset = dlcIndex + 1 + index * 2;
     const value = Number.parseInt(line.slice(offset, offset + 2), 16);
     if (Number.isNaN(value)) return null;
     data.push(value);
@@ -227,9 +248,33 @@ function applyReceivedFrame(frame) {
   decodeVcu2AiStatusFields(frame.data);
 }
 
+function recordReceivedFrame(frame) {
+  if (!frame || !rxFrameStats) return;
+
+  const idKey = formatTrackedCanId(frame.id);
+  rxFrameStats.totalFrames += 1;
+  rxFrameStats.lastSeenId = frame.id;
+  rxFrameStats.lastSeenTimestamp = formatTimestampForEncoding();
+
+  if (!idKey) return;
+  rxFrameStats.countsById[idKey] = (rxFrameStats.countsById[idKey] ?? 0) + 1;
+}
+
+function resetReceivedFrameStats() {
+  if (!rxFrameStats) return;
+
+  rxFrameStats.totalFrames = 0;
+  rxFrameStats.lastSeenId = null;
+  rxFrameStats.lastSeenTimestamp = "";
+  rxFrameStats.countsById = {};
+}
+
 function tryConsumeIncomingLine(line, expectedId) {
   const frame = parseIncomingSlcanFrame(line);
-  if (!frame || frame.id !== expectedId) return null;
+  if (!frame) return null;
+
+  recordReceivedFrame(frame);
+  if (frame.id !== expectedId) return null;
 
   applyReceivedFrame(frame);
   return frame;
@@ -250,6 +295,7 @@ window.CanEncoding = {
   packPeriodicTxFrame,
   parseCanIdValue: parseCanIdValueForEncoding,
   parseIncomingSlcanFrame,
+  resetReceivedFrameStats,
   tryConsumeIncomingLine,
   updateGamepadData,
 };

@@ -47,6 +47,14 @@ window.AppGlobals = {
     AMI_STATE: 0x00,
   },
 
+  // Receive statistics for debugging and adapter validation.
+  rxFrameStats: {
+    totalFrames: 0,
+    lastSeenId: null,
+    lastSeenTimestamp: "",
+    countsById: {},
+  },
+
   // Example control logic outputs driven by switch(AS_STATE).
   controlLogicData: {
     activeCase: "AS_OFF",
