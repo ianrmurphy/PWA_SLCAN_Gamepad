@@ -20,4 +20,11 @@ window.APP_CONFIG = {
     // VCU2AI_Status_ID (0x520) carries HANDSHAKE, GO_SIGNAL, AS_STATE, and AMI_STATE.
     vcu2AiStatusId: "0x520",
   },
+
+  manualControl: {
+    // Full-scale output limits for joystick-driven manual mode.
+    steerMax: 300,
+    speedMax: 4000,
+    brakeMax: 100,
+  },
 };

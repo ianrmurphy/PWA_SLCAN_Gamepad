@@ -65,6 +65,12 @@ Last updated: February 28, 2026
 - `can.vcu2AiStatusId`
   - The CAN ID that the app treats as the VCU status frame for decode.
   - Current default is `0x520`.
+- `manualControl`
+  - Full-scale limits for joystick-driven manual control.
+  - Keys:
+    - `steerMax`
+    - `speedMax`
+    - `brakeMax`
 
 ### Current Defaults
 - TX:
@@ -76,6 +82,10 @@ Last updated: February 28, 2026
   - `VCU2AI_Status_ID = 0x520`
 - SLCAN CAN bitrate:
   - `S6` (`500 kbps`)
+- Manual control full scale:
+  - `steerMax = 300`
+  - `speedMax = 4000`
+  - `brakeMax = 100`
 
 ## Shared Global Data
 - `globals.js` defines `window.AppGlobals`.
@@ -245,20 +255,28 @@ Last updated: February 28, 2026
 - `STEER_REQUEST` from raw gamepad X axis:
   - raw browser convention:
     - positive X = right
-  - control logic intentionally inverts sign:
-    - `GAMEPAD_X_AXIS >= 0.2` -> `STEER_REQUEST = -300`
-    - `GAMEPAD_X_AXIS <= -0.2` -> `STEER_REQUEST = 300`
-    - otherwise `0`
+  - central deadband:
+    - `|GAMEPAD_X_AXIS| <= 0.05` -> `0`
+  - outside the deadband:
+    - scales linearly to full range
+    - control logic intentionally inverts sign
+    - full scale is `-steerMax..steerMax` (current default `-300..300`)
 - `SPEED_REQUEST` from raw gamepad Y axis:
   - raw browser convention:
     - positive Y = down
+  - central deadband:
+    - `|GAMEPAD_Y_AXIS| <= 0.05` contributes `0`
   - up command:
-    - `GAMEPAD_Y_AXIS < -0.2` -> `SPEED_REQUEST = 500`
-    - otherwise `0`
+    - uses `-GAMEPAD_Y_AXIS`
+    - scales linearly from `0` to `speedMax` (current default `4000`)
+    - only upward travel contributes
 - `BRAKE_REQUEST` from raw gamepad Y axis:
+  - central deadband:
+    - `|GAMEPAD_Y_AXIS| <= 0.05` contributes `0`
   - down command:
-    - `GAMEPAD_Y_AXIS > 0.2` -> `BRAKE_REQUEST = 100`
-    - otherwise `0`
+    - uses `+GAMEPAD_Y_AXIS`
+    - scales linearly from `0` to `brakeMax` (current default `100`)
+    - only downward travel contributes
 - Fixed values:
   - `TORQUE_REQUEST = 1950`
   - `DIRECTION_REQUEST = 1`

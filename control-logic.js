@@ -2,6 +2,11 @@
   const appGlobals = window.AppGlobals;
   const txData = appGlobals.txData;
   const controlLogicData = appGlobals.controlLogicData;
+  const manualControlConfig = window.APP_CONFIG?.manualControl ?? {};
+  const MANUAL_AXIS_DEADBAND = 0.05;
+  const MANUAL_STEER_MAX = Math.max(0, Number(manualControlConfig.steerMax) || 300);
+  const MANUAL_SPEED_MAX = Math.max(0, Number(manualControlConfig.speedMax) || 4000);
+  const MANUAL_BRAKE_MAX = Math.max(0, Number(manualControlConfig.brakeMax) || 100);
 
   function setOutputs(missionStatus, steer, speed, torque, direction, estop, brake = 0) {
     appGlobals.MISSION_STATUS = missionStatus;
@@ -13,18 +18,30 @@
     appGlobals.BRAKE_REQUEST = brake;
   }
 
+  function normalizeAxisWithDeadband(value, deadband = MANUAL_AXIS_DEADBAND) {
+    const axisValue = Math.max(-1, Math.min(1, Number(value) || 0));
+    const magnitude = Math.abs(axisValue);
+    if (magnitude <= deadband) return 0;
+
+    const normalizedMagnitude = (magnitude - deadband) / (1 - deadband);
+    return Math.sign(axisValue) * Math.min(1, normalizedMagnitude);
+  }
+
   function getManualSteerRequest() {
-    if (appGlobals.GAMEPAD_X_AXIS >= 0.2) return -300;
-    if (appGlobals.GAMEPAD_X_AXIS <= -0.2) return 300;
-    return 0;
+    const normalizedSteer = normalizeAxisWithDeadband(appGlobals.GAMEPAD_X_AXIS);
+    return Math.round(-normalizedSteer * MANUAL_STEER_MAX);
   }
 
   function getManualSpeedRequest() {
-    return appGlobals.GAMEPAD_Y_AXIS < -0.2 ? 500 : 0;
+    const normalizedThrottle = normalizeAxisWithDeadband(-appGlobals.GAMEPAD_Y_AXIS);
+    if (normalizedThrottle <= 0) return 0;
+    return Math.round(normalizedThrottle * MANUAL_SPEED_MAX);
   }
 
   function getManualBrakeRequest() {
-    return appGlobals.GAMEPAD_Y_AXIS > 0.2 ? 100 : 0;
+    const normalizedBrake = normalizeAxisWithDeadband(appGlobals.GAMEPAD_Y_AXIS);
+    if (normalizedBrake <= 0) return 0;
+    return Math.round(normalizedBrake * MANUAL_BRAKE_MAX);
   }
 
   function evaluateAsState() {
