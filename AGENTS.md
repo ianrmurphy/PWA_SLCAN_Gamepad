@@ -326,6 +326,7 @@ Last updated: February 28, 2026
 - `#txCount`
 - `#lastFrame`
 - `#lastRxFrame`
+- `#adapterVersion`
 
 ### Controls
 - `#serialBaudRate`
@@ -373,16 +374,20 @@ Last updated: February 28, 2026
   2. `port.open({ baudRate: selectedSerialBaud })`
   3. acquire writer
   4. start serial read loop
-  5. reset RX frame counters
-  6. send `C` (tolerates missing ack when already closed)
-  7. wait `50 ms`
-  8. send `S{slcanBitrate}` from config
-  9. send `M00000000`
-  10. send `mFFFFFFFF`
-  11. try `X1` while channel is still closed
-  12. send `O`
-  13. if `X1` failed, start `A` polling loop
-  14. start periodic TX loops
+  5. reset serial-load counters and RX frame counters
+  6. reset TX / RX UI fields and set `#adapterVersion` to `querying...`
+  7. send `V` and wait for a non-error response
+  8. display the returned `V` text in `#adapterVersion`
+  9. send `C` as a short best-effort close (`allowAckError`, `150 ms`)
+  10. wait `50 ms`
+  11. send `S{slcanBitrate}` from config (best-effort, no ack required)
+  12. wait `50 ms`
+  13. send `M00000000` (best-effort, no ack required)
+  14. send `mFFFFFFFF` (best-effort, no ack required)
+  15. send `X1` (best-effort, no ack required)
+  16. send `O` (best-effort, no ack required)
+  17. start `A` receive polling immediately
+  18. start periodic TX loops
 - On disconnect:
   - stop periodic TX loops
   - stop receive polling loop
@@ -396,14 +401,19 @@ Last updated: February 28, 2026
   - max `512` lines
   - oldest queued line is dropped when full
 - Ack handling:
-  - accepts empty `CR`, command echo, and `OK` as success
-  - accepts `BEL`, `ERR`, and `ERROR` as command failure
-  - unsolicited `BEL` with no pending command is ignored and no longer downgrades UI state
+  - waited commands are intentionally minimal:
+    - `V` is the primary adapter-presence and identity check
+    - `C` is used as a short tolerant close during connect / disconnect
+  - when a command is being awaited, empty `CR`, command echo, and `OK` count as success
+  - pending `V` resolves with the returned text line, which is shown in `#adapterVersion`
+  - `BEL`, `ERR`, and `ERROR` only fail a command when a waiter is active
+  - unsolicited `BEL` with no pending command is ignored
 - RX handling:
-  - the adapter is configured open to forward all CAN frames it allows
+  - the app sends open filter commands (`M00000000`, `mFFFFFFFF`) and filters in the browser
   - the app decodes only `0x520` as the VCU status frame
   - all received frame IDs are still counted in `rxFrameStats`
-  - `z` is treated as adapter TX/auto mode feedback, not as a CAN frame
+  - `z` is treated as adapter TX / auto-forwarding feedback, not as a CAN frame
+  - when `z` is seen, the app stops `A` polling and assumes the adapter is auto-forwarding RX data
 
 ## Serial Load Warning
 - The UI exposes `#serialLoadState`.
@@ -448,11 +458,13 @@ Last updated: February 28, 2026
 3. Reload after editing `config.js` or after service worker-affecting JS/UI changes.
 4. Verify `Application > Manifest` shows the manifest.
 5. Verify `Application > Service Workers` shows active `sw.js`.
-6. Connect SLCAN and confirm periodic TX on:
-   - `0x510`
-   - `0x512`
-   - `0x513`
-   - `0x514`
+6. Connect SLCAN and confirm:
+   - `#adapterVersion` shows the adapter response to `V`
+   - periodic TX on:
+     - `0x510`
+     - `0x512`
+     - `0x513`
+     - `0x514`
 7. Confirm the serial console shows actual `TX` and `RX` traffic.
 8. Confirm `Serial load` reports utilization and stays below warning thresholds for the selected serial baud.
 9. Send `VCU2AI_Status_ID` (`0x520`) and confirm:
@@ -472,3 +484,5 @@ Last updated: February 28, 2026
 - RX parsing supports both standard and extended SLCAN receive frames.
 - The service worker provides offline shell behavior, not guaranteed offline hardware access.
 - The code intentionally uses explicit globals for fast iteration and clarity.
+
+

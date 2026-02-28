@@ -6,6 +6,7 @@ const BUTTON_EPSILON = 0.02;
 const MAX_SERIAL_QUEUE = 512;
 const MISSION_TIMER_TICK_MS = 10;
 const SLCAN_ACK_TIMEOUT_MS = 750;
+const SLCAN_INIT_ACK_TIMEOUT_MS = 2000;
 const MAX_SERIAL_LOG_LINES = 200;
 const SERIAL_RX_POLL_INTERVAL_MS = 20;
 const SERIAL_LOAD_SAMPLE_MS = 1000;
@@ -105,6 +106,10 @@ function setAsStateDisplay(text, className) {
 
 function setTxCount(value) {
   setCodeState("txCount", String(value));
+}
+
+function setAdapterVersion(text, className) {
+  setCodeState("adapterVersion", text, className);
 }
 
 function setLastFrame(value) {
@@ -429,7 +434,7 @@ function clearSerialAckWaiters(reason = "serial acknowledgements cleared") {
   }
 }
 
-function settleNextSerialAck(success) {
+function settleNextSerialAck(success, resolvedValue = success) {
   const waiter = serialAckWaiters.shift();
   if (!waiter) {
     if (!success) {
@@ -439,7 +444,7 @@ function settleNextSerialAck(success) {
   }
 
   if (success || waiter.allowAckError) {
-    resolveSerialAckWaiter(waiter, success);
+    resolveSerialAckWaiter(waiter, resolvedValue);
     return;
   }
 
@@ -464,6 +469,11 @@ function matchPendingAckLine(trimmedLine) {
     return true;
   }
 
+  if (waiter.command === "V") {
+    settleNextSerialAck(true, trimmedLine);
+    return true;
+  }
+
   if (upperLine === waiter.command.toUpperCase()) {
     settleNextSerialAck(true);
     return true;
@@ -472,10 +482,21 @@ function matchPendingAckLine(trimmedLine) {
   return false;
 }
 
+function allowImplicitOpenAck(trimmedLine) {
+  const waiter = serialAckWaiters[0];
+  if (!waiter || waiter.command !== "O") return false;
+
+  const upperLine = trimmedLine.toUpperCase();
+  if (upperLine === "ERR" || upperLine === "ERROR") return false;
+
+  settleNextSerialAck(true);
+  return true;
+}
+
 async function configureSlcanReceiveFilter() {
   try {
-    await sendSlcanCommand("M00000000", { waitForAck: true });
-    await sendSlcanCommand("mFFFFFFFF", { waitForAck: true });
+    await sendSlcanCommand("M00000000");
+    await sendSlcanCommand("mFFFFFFFF");
     setRxConfigState(`adapter open, decode VCU2AI_Status_ID ${formatCanId(vcu2AiStatusId)}`, "ok");
   } catch (e) {
     console.warn("SLCAN receive filter setup skipped", e);
@@ -544,6 +565,8 @@ function processSerialLine(rawLine) {
   if (matchPendingAckLine(trimmedLine)) {
     return;
   }
+
+  allowImplicitOpenAck(trimmedLine);
 
   if (trimmedLine === "z" || trimmedLine === "Z") {
     if (!slcanAutoPollEnabled) {
@@ -915,37 +938,28 @@ async function connectSerial() {
     setTxCount(0);
     setLastFrame("-");
     setLastRxFrame("-", "");
+    setAdapterVersion("querying...", "warn");
     refreshCanDebugData();
+
+    const adapterVersion = await sendSlcanCommand("V", {
+      waitForAck: true,
+      ackTimeoutMs: SLCAN_INIT_ACK_TIMEOUT_MS,
+    });
+    setAdapterVersion(String(adapterVersion || "-"), "ok");
 
     try {
       await sendSlcanCommand("C", { waitForAck: true, allowAckError: true, ackTimeoutMs: 150 });
-    } catch (e) {
-      const message = e?.message ?? String(e);
-      if (!message.includes('timed out waiting for acknowledgement')) {
-        throw e;
-      }
-    }
+    } catch {}
     await new Promise((resolve) => window.setTimeout(resolve, 50));
-    await sendSlcanCommand(`S${slcanBitrateCode}`, { waitForAck: true });
+    await sendSlcanCommand(`S${slcanBitrateCode}`);
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
     await configureSlcanReceiveFilter();
 
     slcanAutoPollEnabled = false;
-    try {
-      await sendSlcanCommand("X1", { waitForAck: true, ackTimeoutMs: 150 });
-      slcanAutoPollEnabled = true;
-    } catch (e) {
-      const message = e?.message ?? String(e);
-      if (message.includes('timed out waiting for acknowledgement') || message.includes('rejected')) {
-      } else {
-        throw e;
-      }
-    }
+    await sendSlcanCommand("X1");
+    await sendSlcanCommand("O");
 
-    await sendSlcanCommand("O", { waitForAck: true });
-
-    if (!slcanAutoPollEnabled) {
-      startSerialReceivePolling();
-    }
+    startSerialReceivePolling();
 
     startPeriodicTransmit();
     setSerialState("connected (channel open)", "ok");
@@ -1119,6 +1133,7 @@ function setupSerialBridge() {
 
   setSerialState("ready to connect", "warn");
   setSerialLoadState("idle", "");
+  setAdapterVersion("-", "");
   refreshSerialConsole();
   setSchedulerState("stopped", "warn");
   setTxCount(0);
