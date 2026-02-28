@@ -138,9 +138,7 @@ function loadPeriodicFrames() {
 }
 
 function loadVcu2AiStatusId() {
-  const parsed =
-    parseCanIdValue(window.APP_CONFIG?.can?.vcu2AiStatusId) ??
-    parseCanIdValue(window.APP_CONFIG?.can?.receiveId);
+  const parsed = parseCanIdValue(window.APP_CONFIG?.can?.vcu2AiStatusId);
   return parsed ?? (window.CanEncoding?.VCU2AI_STATUS_ID ?? 0x520);
 }
 
@@ -210,16 +208,6 @@ function buildCanDebugSnapshot() {
         DIRECTION_REQUEST: appGlobals.DIRECTION_REQUEST,
         ESTOP_REQUEST: appGlobals.ESTOP_REQUEST,
         mission_timer: appGlobals.mission_timer,
-      },
-      txData: {
-        asState: appGlobals.txData?.asState ?? 0,
-        gamepadEventType: appGlobals.txData?.gamepadEventType ?? 0,
-        gamepadIndex: appGlobals.txData?.gamepadIndex ?? 0,
-        controlIndex: appGlobals.txData?.controlIndex ?? 0,
-        data0: appGlobals.txData?.data0 ?? 0,
-        data1: appGlobals.txData?.data1 ?? 0,
-        data2: appGlobals.txData?.data2 ?? 0,
-        data3: appGlobals.txData?.data3 ?? 0,
       },
       txFrames,
     },

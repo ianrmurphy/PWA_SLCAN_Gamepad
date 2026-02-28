@@ -1,4 +1,4 @@
-const CACHE_NAME = "gamepad-can-bridge-shell-v1";
+const CACHE_NAME = "gamepad-can-bridge-shell-v2";
 const CACHE_PREFIX = "gamepad-can-bridge-shell-";
 const PRECACHE_URLS = [
   "./",
@@ -12,6 +12,9 @@ const PRECACHE_URLS = [
   "icons/icon-192.svg",
   "icons/icon-512.svg",
 ];
+const SHELL_ASSET_PATHS = new Set(
+  PRECACHE_URLS.map((url) => new URL(url, self.location.origin).pathname)
+);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -59,6 +62,23 @@ self.addEventListener("fetch", (event) => {
             (await cache.match("./")) ||
             Response.error()
           );
+        }
+      })()
+    );
+    return;
+  }
+
+  const isShellAsset = SHELL_ASSET_PATHS.has(requestUrl.pathname);
+  if (isShellAsset) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(CACHE_NAME);
+        try {
+          const networkResponse = await fetch(request);
+          cache.put(request, networkResponse.clone());
+          return networkResponse;
+        } catch {
+          return (await cache.match(request)) || Response.error();
         }
       })()
     );

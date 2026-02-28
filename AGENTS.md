@@ -60,7 +60,6 @@ Last updated: February 27, 2026
 - `vcu2AiStatusId`
   - Receive filter ID for the VCU status frame.
   - Canonical key is `can.vcu2AiStatusId`.
-  - `app.js` still accepts legacy `can.receiveId` as a fallback for compatibility.
 
 ### Current Defaults
 - TX:
