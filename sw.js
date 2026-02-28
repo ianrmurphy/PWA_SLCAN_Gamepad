@@ -1,4 +1,4 @@
-const CACHE_NAME = "gamepad-can-bridge-shell-v3";
+const CACHE_NAME = "gamepad-can-bridge-shell-v4";
 const CACHE_PREFIX = "gamepad-can-bridge-shell-";
 const PRECACHE_URLS = [
   "./",
@@ -7,6 +7,7 @@ const PRECACHE_URLS = [
   "globals.js",
   "can-encoding.js",
   "control-logic.js",
+  "control-raw.js",
   "app.js",
   "manifest.webmanifest",
   "icons/icon-192.svg",

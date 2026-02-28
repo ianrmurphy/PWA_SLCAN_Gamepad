@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const APP_BUILD_VERSION = "2026-02-28.1";
+const APP_BUILD_VERSION = "2026-02-28.6";
 const DEFAULT_SERIAL_BAUD_RATE = 2000000;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
@@ -8,11 +8,13 @@ const GAMEPAD_POLL_INTERVAL_MS = 10;
 const MAX_SERIAL_QUEUE = 512;
 const MISSION_TIMER_TICK_MS = 10;
 const DEBUG_RENDER_INTERVAL_MS = 100;
+const DUAL_INPUT_THRESHOLD = 0.2;
 const SLCAN_ACK_TIMEOUT_MS = 750;
 const SLCAN_INIT_ACK_TIMEOUT_MS = 2000;
 const MAX_SERIAL_LOG_LINES = 200;
 const SERIAL_RX_POLL_INTERVAL_MS = 20;
 const SERIAL_LOAD_SAMPLE_MS = 1000;
+const DEFAULT_CONTROL_MODE = "state";
 
 const DEFAULT_PERIODIC_FRAMES = [
   { id: 0x510, intervalMs: 20 },
@@ -48,6 +50,7 @@ let gamepadPollLoop = null;
 let periodicFrames = [];
 let canTxLoops = [];
 let controlLogic = null;
+let activeControlMode = DEFAULT_CONTROL_MODE;
 let vcu2AiStatusId = 0x520;
 let slcanBitrateCode = "6";
 let serialReceivePollLoop = null;
@@ -104,6 +107,12 @@ function setPageFocusState(text, className) {
   setCodeState("pageFocusState", text, className);
 }
 
+function setDualInputBanner(active) {
+  const banner = $("dualInputBanner");
+  if (!banner) return;
+  banner.classList.toggle("show", !!active);
+}
+
 function setSchedulerState(text, className) {
   setCodeState("txSchedulerState", text, className);
 }
@@ -126,6 +135,60 @@ function setLogicConfigState(text, className) {
 
 function setAsStateDisplay(text, className) {
   setCodeState("asStateDisplay", text, className);
+}
+
+function getSelectedControlMode() {
+  const selectedValue = $("controlMode")?.value;
+  return selectedValue === "raw" ? "raw" : DEFAULT_CONTROL_MODE;
+}
+
+function applyControlLogicSnapshot(snapshot) {
+  if (!snapshot) {
+    setAsStateDisplay("unavailable", "warn");
+    refreshOutputStateDisplay();
+    refreshCanDebugData();
+    return;
+  }
+
+  const stateSummary = [
+    `AS_STATE:${snapshot.asState}`,
+    `AMI_STATE:${snapshot.amiState}`,
+    `HANDSHAKE:${snapshot.handshake ? 1 : 0}`,
+    `GO_SIGNAL:${snapshot.goSignal ? 1 : 0}`,
+  ].join(" ");
+  setAsStateDisplay(stateSummary, "ok");
+  refreshOutputStateDisplay();
+  refreshCanDebugData();
+}
+
+function buildControlLogicStatusText(mode) {
+  if (mode === "raw") {
+    return "raw manual, direct gamepad";
+  }
+  return `switch(AS_STATE), source VCU2AI_Status ${formatCanId(vcu2AiStatusId)}`;
+}
+
+function createControlLogicForMode(mode) {
+  const provider = mode === "raw" ? window.ControlRawLogic : window.ControlLogic;
+  if (!provider?.create) {
+    const missingName = mode === "raw" ? "raw control" : "control logic";
+    setLogicConfigState(`${missingName} unavailable`, "warn");
+    setAsStateDisplay("unavailable", "warn");
+    refreshOutputStateDisplay();
+    refreshCanDebugData();
+    controlLogic = null;
+    activeControlMode = mode;
+    return;
+  }
+
+  activeControlMode = mode;
+  controlLogic = provider.create({
+    onLogicChanged(snapshot) {
+      applyControlLogicSnapshot(snapshot);
+    },
+  });
+
+  setLogicConfigState(buildControlLogicStatusText(mode), "ok");
 }
 
 function refreshOutputStateDisplay() {
@@ -328,6 +391,9 @@ function buildCanDebugSnapshot() {
     },
     otherGlobals: {
       GAMEPAD_BUTTON_0_PRESSED: appGlobals.GAMEPAD_BUTTON_0_PRESSED,
+      GAMEPAD_BUTTON_1_PRESSED: appGlobals.GAMEPAD_BUTTON_1_PRESSED,
+      GAMEPAD_BUTTON_2_PRESSED: appGlobals.GAMEPAD_BUTTON_2_PRESSED,
+      GAMEPAD_BUTTON_3_PRESSED: appGlobals.GAMEPAD_BUTTON_3_PRESSED,
       GAMEPAD_X_AXIS: appGlobals.GAMEPAD_X_AXIS,
       GAMEPAD_Y_AXIS: appGlobals.GAMEPAD_Y_AXIS,
       controlLogicData: appGlobals.controlLogicData,
@@ -652,21 +718,12 @@ async function drainSerialQueue() {
 
 function refreshControlLogicDisplay() {
   if (!controlLogic) {
-    refreshOutputStateDisplay();
-    refreshCanDebugData();
+    applyControlLogicSnapshot(null);
     return;
   }
 
   const snapshot = controlLogic.refresh();
-  const stateSummary = [
-    `AS_STATE:${snapshot.asState}`,
-    `AMI_STATE:${snapshot.amiState}`,
-    `HANDSHAKE:${snapshot.handshake ? 1 : 0}`,
-    `GO_SIGNAL:${snapshot.goSignal ? 1 : 0}`,
-  ].join(" ");
-  setAsStateDisplay(stateSummary, "ok");
-  refreshOutputStateDisplay();
-  refreshCanDebugData();
+  applyControlLogicSnapshot(snapshot);
 }
 
 function processSerialLine(rawLine) {
@@ -871,7 +928,11 @@ function startSerialLoadMonitorLoop() {
 function tickMissionTimer() {
   if (!controlLogic) return;
 
-  if (window.AppGlobals.AS_STATE === 0x3) {
+  const shouldTickMissionTimer = controlLogic?.shouldTickMissionTimer
+    ? controlLogic.shouldTickMissionTimer()
+    : window.AppGlobals.AS_STATE === 0x3;
+
+  if (shouldTickMissionTimer) {
     window.AppGlobals.mission_timer += MISSION_TIMER_TICK_MS;
   }
 
@@ -898,16 +959,29 @@ function updatePrimaryGamepadInputs(pads) {
     : null;
 
   window.AppGlobals.GAMEPAD_BUTTON_0_PRESSED = !!primary?.buttons?.[0]?.pressed;
+  window.AppGlobals.GAMEPAD_BUTTON_1_PRESSED = !!primary?.buttons?.[1]?.pressed;
+  window.AppGlobals.GAMEPAD_BUTTON_2_PRESSED = !!primary?.buttons?.[2]?.pressed;
+  window.AppGlobals.GAMEPAD_BUTTON_3_PRESSED = !!primary?.buttons?.[3]?.pressed;
   window.AppGlobals.GAMEPAD_X_AXIS = Number(primary?.axes?.[0] ?? 0);
+  window.AppGlobals.GAMEPAD_X2_AXIS = Number(primary?.axes?.[2] ?? 0);
   window.AppGlobals.GAMEPAD_Y_AXIS = Number(primary?.axes?.[1] ?? 0);
   if (!Number.isFinite(window.AppGlobals.GAMEPAD_X_AXIS)) {
     window.AppGlobals.GAMEPAD_X_AXIS = 0;
+  }
+  if (!Number.isFinite(window.AppGlobals.GAMEPAD_X2_AXIS)) {
+    window.AppGlobals.GAMEPAD_X2_AXIS = 0;
   }
   if (!Number.isFinite(window.AppGlobals.GAMEPAD_Y_AXIS)) {
     window.AppGlobals.GAMEPAD_Y_AXIS = 0;
   }
 
-  const liveText = `pads:${pads.length} X:${window.AppGlobals.GAMEPAD_X_AXIS.toFixed(2)} Y:${window.AppGlobals.GAMEPAD_Y_AXIS.toFixed(2)} B0:${window.AppGlobals.GAMEPAD_BUTTON_0_PRESSED ? 1 : 0}`;
+  const dualInputActive =
+    Math.abs(window.AppGlobals.GAMEPAD_X_AXIS) >= DUAL_INPUT_THRESHOLD &&
+    Math.abs(window.AppGlobals.GAMEPAD_X2_AXIS) >= DUAL_INPUT_THRESHOLD &&
+    Math.sign(window.AppGlobals.GAMEPAD_X_AXIS) !== Math.sign(window.AppGlobals.GAMEPAD_X2_AXIS);
+  setDualInputBanner(dualInputActive);
+
+  const liveText = `pads:${pads.length} X:${window.AppGlobals.GAMEPAD_X_AXIS.toFixed(2)} X2:${window.AppGlobals.GAMEPAD_X2_AXIS.toFixed(2)} Y:${window.AppGlobals.GAMEPAD_Y_AXIS.toFixed(2)} B0:${window.AppGlobals.GAMEPAD_BUTTON_0_PRESSED ? 1 : 0}`;
   setGamepadLiveDisplay(liveText, pads.length ? "ok" : "warn");
 }
 
@@ -1154,6 +1228,18 @@ function processGamepads() {
       const analogChanged = Math.abs(button.value - previousButton.value) >= BUTTON_EPSILON;
 
       if (pressedChanged || analogChanged) {
+        if (button.pressed && !previousButton.pressed) {
+          if (buttonIndex === 0) {
+            window.AppGlobals.GAMEPAD_BUTTON_0_PRESS_COUNT += 1;
+          } else if (buttonIndex === 1) {
+            window.AppGlobals.GAMEPAD_BUTTON_1_PRESS_COUNT += 1;
+          } else if (buttonIndex === 2) {
+            window.AppGlobals.GAMEPAD_BUTTON_2_PRESS_COUNT += 1;
+          } else if (buttonIndex === 3) {
+            window.AppGlobals.GAMEPAD_BUTTON_3_PRESS_COUNT += 1;
+          }
+        }
+
         setGamepadData(
           GAMEPAD_EVENT.button,
           index,
@@ -1211,7 +1297,7 @@ function setupGamepadBridge() {
 
   setGamepadState("waiting", "warn");
   setGamepadPollingState("ready", "warn");
-  setGamepadLiveDisplay("pads:0 X:0.00 Y:0.00 B0:0", "warn");
+    setGamepadLiveDisplay("pads:0 X:0.00 X2:0.00 Y:0.00 B0:0", "warn");
   window.addEventListener("gamepadconnected", (event) => {
     setGamepadState(`connected #${event.gamepad.index}`, "ok");
   });
@@ -1231,6 +1317,9 @@ function setupGamepadBridge() {
 function refreshPageFocusState() {
   const isVisible = document.visibilityState === "visible";
   const hasFocus = document.hasFocus();
+  const focusWarningActive = !isVisible || !hasFocus;
+
+  document.body?.classList.toggle("focus-warning-active", focusWarningActive);
 
   if (!isVisible) {
     setPageFocusState("hidden", "warn");
@@ -1264,29 +1353,17 @@ function setupConfig() {
     setRxConfigState("CAN encoding unavailable", "warn");
   }
 
-  if (!window.ControlLogic?.create) {
-    setLogicConfigState("control logic unavailable", "warn");
-    setAsStateDisplay("unavailable", "warn");
-    refreshOutputStateDisplay();
-    controlLogic = null;
-    return;
-  }
+  createControlLogicForMode(getSelectedControlMode());
+}
 
-  controlLogic = window.ControlLogic.create({
-    onLogicChanged(snapshot) {
-      const stateSummary = [
-        `AS_STATE:${snapshot.asState}`,
-        `AMI_STATE:${snapshot.amiState}`,
-        `HANDSHAKE:${snapshot.handshake ? 1 : 0}`,
-        `GO_SIGNAL:${snapshot.goSignal ? 1 : 0}`,
-      ].join(" ");
-      setAsStateDisplay(stateSummary, "ok");
-    },
+function setupControlModeSwitch() {
+  const controlModeSelect = $("controlMode");
+  if (!controlModeSelect) return;
+
+  controlModeSelect.value = getSelectedControlMode();
+  controlModeSelect.addEventListener("change", () => {
+    createControlLogicForMode(getSelectedControlMode());
   });
-
-  setLogicConfigState(`switch(AS_STATE), source VCU2AI_Status ${formatCanId(vcu2AiStatusId)}`, "ok");
-  refreshOutputStateDisplay();
-  refreshCanDebugData();
 }
 
 function setupSerialBridge() {
@@ -1334,6 +1411,7 @@ function main() {
   void registerServiceWorker();
   setupCollapsiblePanels();
   setupPageFocusMonitoring();
+  setupControlModeSwitch();
   setupConfig();
   startMissionTimerLoop();
   startSerialLoadMonitorLoop();
@@ -1342,3 +1420,6 @@ function main() {
 }
 
 main();
+
+
+

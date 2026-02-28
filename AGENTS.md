@@ -14,8 +14,10 @@ Last updated: February 28, 2026
   - transmits 4 periodic CAN frames
   - receives all CAN traffic the adapter forwards
   - decodes `VCU2AI_Status_ID` (`0x520`) into control globals
-  - runs control logic from `switch (AS_STATE)`
+  - supports selectable control modes: `switch (AS_STATE)` or raw manual
   - exposes lightweight live gamepad, debug, and serial-traffic views
+  - shows a `DUAL INPUT` overlay when joystick axes `0` and `2` oppose each other
+  - makes focus loss visually obvious by greying the page background and highlighting the focus warning
   - estimates serial-link utilization and warns about possible overrun risk
 
 ## Main Files
@@ -27,7 +29,8 @@ Last updated: February 28, 2026
     2. `globals.js`
     3. `can-encoding.js`
     4. `control-logic.js`
-    5. `app.js`
+    5. `control-raw.js`
+    6. `app.js`
 - `config.js`
   - Editable runtime config in `window.APP_CONFIG`.
 - `globals.js`
@@ -36,8 +39,11 @@ Last updated: February 28, 2026
   - CAN packing/parsing layer.
   - Owns frame ID constants and SLCAN encode/decode helpers.
 - `control-logic.js`
-  - `switch (AS_STATE)` control logic.
+  - Preserved state-driven control logic using `switch (AS_STATE)`.
   - Consumes globals and writes request globals.
+- `control-raw.js`
+  - Basic direct manual control.
+  - Ignores `switch (AS_STATE)` and drives outputs directly from the gamepad.
 - `app.js`
   - Main runtime orchestration.
   - Owns WebSerial, serial read/write loops, gamepad polling, timer loops, UI updates, and service worker registration.
@@ -45,6 +51,7 @@ Last updated: February 28, 2026
   - PWA manifest for installability.
 - `sw.js`
   - Offline shell service worker.
+  - `control-raw.js` is part of the shell asset list and should be treated as a network-first shell file.
 - `icons/icon-192.svg`
 - `icons/icon-512.svg`
 - `README.md`
@@ -99,7 +106,15 @@ Last updated: February 28, 2026
 
 ### Gamepad Input Globals
 - `GAMEPAD_BUTTON_0_PRESSED`
+- `GAMEPAD_BUTTON_1_PRESSED`
+- `GAMEPAD_BUTTON_2_PRESSED`
+- `GAMEPAD_BUTTON_3_PRESSED`
+- `GAMEPAD_BUTTON_0_PRESS_COUNT`
+- `GAMEPAD_BUTTON_1_PRESS_COUNT`
+- `GAMEPAD_BUTTON_2_PRESS_COUNT`
+- `GAMEPAD_BUTTON_3_PRESS_COUNT`
 - `GAMEPAD_X_AXIS`
+- `GAMEPAD_X2_AXIS`
 - `GAMEPAD_Y_AXIS`
 
 ### Control Output Globals
@@ -147,6 +162,24 @@ Last updated: February 28, 2026
     - `emergencyActive`
     - `handshakeValid`
     - `goSignalActive`
+
+## Control Mode Selection
+- `index.html` exposes a `#controlMode` selector.
+- `state`
+  - Uses `window.ControlLogic` from `control-logic.js`.
+  - Preserves the existing `switch (AS_STATE)` behavior.
+- `raw`
+  - Uses `window.ControlRawLogic` from `control-raw.js`.
+  - Applies direct manual gamepad control without `switch (AS_STATE)`.
+  - Latching button controls:
+    - button 0 cycles `MISSION_STATUS` through `0 -> 1 -> 2 -> 3 -> 0`
+    - button 1 toggles `DIRECTION_REQUEST` between `0` and `1`
+    - button 2 toggles `ESTOP_REQUEST` between `0` and `1`
+    - button 3 toggles `TORQUE_REQUEST` between `0` and `1950`
+  - These button actions are rising-edge triggered and do not retrigger while held.
+  - The latching is driven from explicit button press counters incremented in `processGamepads()`.
+  - `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` remain axis-driven with the existing linear mapping and deadband.
+- `app.js` can switch modes at runtime without a page reload.
 
 ## CAN Protocol Context
 
@@ -252,11 +285,11 @@ Last updated: February 28, 2026
 #### Default `AMI_STATE`
 - Manual driving mode.
 - `MISSION_STATUS = 3` while gamepad button 0 is pressed, else `1`.
-- `STEER_REQUEST` from raw gamepad X axis:
+- `STEER_REQUEST` from the stronger of raw gamepad X axes `0` and `2`:
   - raw browser convention:
     - positive X = right
   - central deadband:
-    - `|GAMEPAD_X_AXIS| <= 0.05` -> `0`
+    - `|axis| <= 0.05` -> `0`
   - outside the deadband:
     - scales linearly to full range
     - control logic intentionally inverts sign
@@ -335,12 +368,19 @@ Last updated: February 28, 2026
 - The main UI also shows a lightweight live primary-pad sample:
   - pad count
   - primary `X`
+  - primary `X2`
   - primary `Y`
   - primary button 0 state
 - The main UI also shows page focus state:
   - `focused`
   - `visible, unfocused`
   - `hidden`
+- If the page is not focused or visible:
+  - the page background changes from white to grey
+  - the `Ensure page has focus...` heading is highlighted yellow
+- `DUAL INPUT` Easter egg:
+  - shows as a large overlay banner
+  - triggers when axes `0` and `2` are both above `0.2` in magnitude and opposite in sign
 
 ## UI Elements
 
@@ -361,6 +401,7 @@ Last updated: February 28, 2026
 - `#lastFrame`
 - `#lastRxFrame`
 - `#adapterVersion`
+- `#focusWarning`
 - `#missionStatusDisplay`
 - `#steerRequestDisplay`
 - `#torqueRequestDisplay`
@@ -368,6 +409,7 @@ Last updated: February 28, 2026
 - `#brakeRequestDisplay`
 - `#directionRequestDisplay`
 - `#estopRequestDisplay`
+- `#dualInputBanner`
 
 ### Controls
 - `#serialBaudRate`
@@ -379,13 +421,15 @@ Last updated: February 28, 2026
     - `500000`
     - `1000000`
     - `2000000`
+- `#controlMode`
+  - Selects `switch(AS_STATE)` or `raw manual`.
 - `#serialConnect`
 - `#serialDisconnect`
 
 ### Build Display
 - `#appVersion`
 - Set from `app.js` constant:
-  - `APP_BUILD_VERSION = "2026-02-28.1"`
+  - `APP_BUILD_VERSION = "2026-02-28.6"`
 - Intended as a visible deployment/build marker so stale hosted shells are obvious.
 
 ### Serial Console
@@ -561,5 +605,6 @@ Last updated: February 28, 2026
 - RX parsing supports both standard and extended SLCAN receive frames.
 - The service worker provides offline shell behavior, not guaranteed offline hardware access.
 - The code intentionally uses explicit globals for fast iteration and clarity.
+
 
 

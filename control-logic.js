@@ -27,8 +27,14 @@
     return Math.sign(axisValue) * Math.min(1, normalizedMagnitude);
   }
 
+  function getNormalizedSteerAxis() {
+    const primarySteer = normalizeAxisWithDeadband(appGlobals.GAMEPAD_X_AXIS);
+    const secondarySteer = normalizeAxisWithDeadband(appGlobals.GAMEPAD_X2_AXIS);
+    return Math.abs(primarySteer) >= Math.abs(secondarySteer) ? primarySteer : secondarySteer;
+  }
+
   function getManualSteerRequest() {
-    const normalizedSteer = normalizeAxisWithDeadband(appGlobals.GAMEPAD_X_AXIS);
+    const normalizedSteer = getNormalizedSteerAxis();
     return Math.round(-normalizedSteer * MANUAL_STEER_MAX);
   }
 
