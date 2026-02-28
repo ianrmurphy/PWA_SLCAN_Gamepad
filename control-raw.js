@@ -59,6 +59,35 @@
     return Number(currentValue) === 1950 ? 0 : 1950;
   }
 
+  function resetOutputs() {
+    appGlobals.MISSION_STATUS = 0;
+    appGlobals.STEER_REQUEST = 0;
+    appGlobals.TORQUE_REQUEST = 0;
+    appGlobals.SPEED_REQUEST = 0;
+    appGlobals.BRAKE_REQUEST = 0;
+    appGlobals.DIRECTION_REQUEST = 0;
+    appGlobals.ESTOP_REQUEST = 0;
+    appGlobals.mission_timer = 0;
+
+    txData.asState = 0;
+    txData.gamepadEventType = 0;
+    txData.gamepadIndex = 0;
+    txData.controlIndex = 0;
+    txData.data0 = 0;
+    txData.data1 = 0;
+    txData.data2 = 0;
+    txData.data3 = 0;
+
+    controlLogicData.activeCase = "RAW_MANUAL";
+    controlLogicData.statusText = "Raw manual reset to zero";
+    controlLogicData.allowTorque = false;
+    controlLogicData.readyToDrive = false;
+    controlLogicData.finishRequested = false;
+    controlLogicData.emergencyActive = false;
+    controlLogicData.handshakeValid = appGlobals.HANDSHAKE;
+    controlLogicData.goSignalActive = appGlobals.GO_SIGNAL;
+  }
+
   function applyPressDelta(previousCount, currentCount, action) {
     let safePreviousCount = Math.max(0, Number(previousCount) || 0);
     const safeCurrentCount = Math.max(0, Number(currentCount) || 0);
@@ -136,23 +165,79 @@
     };
   }
 
+  function buildSnapshot() {
+    return {
+      asState: appGlobals.AS_STATE,
+      amiState: appGlobals.AMI_STATE,
+      handshake: appGlobals.HANDSHAKE,
+      goSignal: appGlobals.GO_SIGNAL,
+      missionStatus: appGlobals.MISSION_STATUS,
+      missionTimer: appGlobals.mission_timer,
+      activeCase: controlLogicData.activeCase,
+      statusText: controlLogicData.statusText,
+      label: "RAW_MANUAL",
+    };
+  }
+
   function create(options = {}) {
     const onLogicChanged =
       typeof options.onLogicChanged === "function" ? options.onLogicChanged : () => {};
+    const resetOnCreate = options.resetOnCreate === true;
     const previousPressCounts = {
       button0: Math.max(0, Number(appGlobals.GAMEPAD_BUTTON_0_PRESS_COUNT) || 0),
       button1: Math.max(0, Number(appGlobals.GAMEPAD_BUTTON_1_PRESS_COUNT) || 0),
       button2: Math.max(0, Number(appGlobals.GAMEPAD_BUTTON_2_PRESS_COUNT) || 0),
       button3: Math.max(0, Number(appGlobals.GAMEPAD_BUTTON_3_PRESS_COUNT) || 0),
     };
+    const baselineInputs = {
+      button0Count: previousPressCounts.button0,
+      button1Count: previousPressCounts.button1,
+      button2Count: previousPressCounts.button2,
+      button3Count: previousPressCounts.button3,
+      x: Number(appGlobals.GAMEPAD_X_AXIS) || 0,
+      x2: Number(appGlobals.GAMEPAD_X2_AXIS) || 0,
+      y: Number(appGlobals.GAMEPAD_Y_AXIS) || 0,
+    };
+    let waitingForFreshInput = resetOnCreate;
+
+    if (resetOnCreate) {
+      resetOutputs();
+    }
+
+    function hasFreshInput() {
+      if (
+        Math.abs((Number(appGlobals.GAMEPAD_X_AXIS) || 0) - baselineInputs.x) >= MANUAL_AXIS_DEADBAND ||
+        Math.abs((Number(appGlobals.GAMEPAD_X2_AXIS) || 0) - baselineInputs.x2) >= MANUAL_AXIS_DEADBAND ||
+        Math.abs((Number(appGlobals.GAMEPAD_Y_AXIS) || 0) - baselineInputs.y) >= MANUAL_AXIS_DEADBAND
+      ) {
+        return true;
+      }
+
+      return (
+        appGlobals.GAMEPAD_BUTTON_0_PRESS_COUNT > baselineInputs.button0Count ||
+        appGlobals.GAMEPAD_BUTTON_1_PRESS_COUNT > baselineInputs.button1Count ||
+        appGlobals.GAMEPAD_BUTTON_2_PRESS_COUNT > baselineInputs.button2Count ||
+        appGlobals.GAMEPAD_BUTTON_3_PRESS_COUNT > baselineInputs.button3Count
+      );
+    }
 
     function refresh() {
+      if (waitingForFreshInput) {
+        if (!hasFreshInput()) {
+          const snapshot = buildSnapshot();
+          onLogicChanged(snapshot);
+          return snapshot;
+        }
+        waitingForFreshInput = false;
+      }
+
       const snapshot = evaluateRawControl(previousPressCounts);
       onLogicChanged(snapshot);
       return snapshot;
     }
 
-    const initial = refresh();
+    const initial = buildSnapshot();
+    onLogicChanged(initial);
 
     return {
       getCurrentAsState() {
@@ -172,5 +257,6 @@
   window.ControlRawLogic = {
     create,
     evaluateRawControl,
+    resetOutputs,
   };
 })();

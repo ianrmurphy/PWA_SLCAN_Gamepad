@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const APP_BUILD_VERSION = "2026-02-28.6";
+const APP_BUILD_VERSION = "2026-02-28.7";
 const DEFAULT_SERIAL_BAUD_RATE = 2000000;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
@@ -169,6 +169,7 @@ function buildControlLogicStatusText(mode) {
 }
 
 function createControlLogicForMode(mode) {
+  const switchingToRaw = mode === "raw" && activeControlMode !== "raw";
   const provider = mode === "raw" ? window.ControlRawLogic : window.ControlLogic;
   if (!provider?.create) {
     const missingName = mode === "raw" ? "raw control" : "control logic";
@@ -183,6 +184,7 @@ function createControlLogicForMode(mode) {
 
   activeControlMode = mode;
   controlLogic = provider.create({
+    resetOnCreate: switchingToRaw,
     onLogicChanged(snapshot) {
       applyControlLogicSnapshot(snapshot);
     },
