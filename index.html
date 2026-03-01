@@ -84,10 +84,7 @@
     <div id="dualInputBanner" aria-hidden="true"><span>DUAL INPUT</span></div>
     <div class="card">
       <h1>FS-AI ADS-DV Gamepad to SLCAN Bridge</h1>
-      <h2 id="focusWarning">Ensure page has focus to capture Gamepad events...</h2>
-      <p class="muted">
-        Build: <code id="appVersion">loading...</code>
-      </p>
+      <h2 id="focusWarning">NOTE: Some gamepads require page focus to capture events.</h2>
 
       <div class="row compact-row">
         <label class="muted" for="serialBaudRate">Serial baud:</label>
@@ -98,43 +95,38 @@
           <option value="1000000">1000000</option>
           <option value="2000000" selected>2000000</option>
         </select>
+        <button id="serialConnect">Connect SLCAN</button>
+        <button id="serialDisconnect" disabled>Disconnect</button> &bull;
+        Scheduler: <code id="txSchedulerState">stopped</code>
       </div>
 
-      <div class="row">
-        <button id="serialConnect">Connect SLCAN</button>
-        <button id="serialDisconnect" disabled>Disconnect</button>
-      </div>
       <p class="muted">
         Serial: <code id="serialState">not connected</code> &bull;
-        Serial load: <code id="serialLoadState">idle</code>
+        Serial load: <code id="serialLoadState">idle</code> &bull;
+        Adapter: <code id="adapterVersion">-</code>
       </p>
-      <p class="muted">
-        Adapter: <code id="adapterVersion">-</code> &bull;
-        Scheduler: <code id="txSchedulerState">stopped</code>
-      </p>
+
       <p class="muted">
         Gamepad: <code id="gamepadState">waiting</code> &bull;
         Polling: <code id="gamepadPollingState">idle</code>
       </p>
+
       <p class="muted">
+        Page focus: <code id="pageFocusState">loading...</code> &bull;
         Gamepad live: <code id="gamepadLiveDisplay">pads:0 X:0.00 X2:0.00 Y:0.00 B0:0</code>
-      </p>
-      <p class="muted">
-        Page focus: <code id="pageFocusState">loading...</code>
       </p>
 
       <p class="muted">
         TX config: <code id="frameConfig">loading...</code>
       </p>
+
       <p class="muted">
         Frames sent: <code id="txCount">0</code> &bull;
         Last frame: <code id="lastFrame">-</code>
       </p>
 
       <p class="muted">
-        RX filter: <code id="rxConfig">loading...</code>
-      </p>
-      <p class="muted">
+        RX filter: <code id="rxConfig">loading...</code> &bull;
         Last RX: <code id="lastRxFrame">-</code>
       </p>
 
@@ -183,6 +175,9 @@
         <pre id="canDebugData">loading...</pre>
       </details>
 
+      <p class="muted">
+        Build: <code id="appVersion">loading...</code>
+      </p>
     </div>
 
     <script src="config.js"></script>
@@ -193,3 +188,4 @@
     <script src="app.js"></script>
   </body>
 </html>
+

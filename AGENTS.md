@@ -1,6 +1,6 @@
 # Gamepad to CAN Bridge Agent Context
 
-Last updated: February 28, 2026
+Last updated: March 1, 2026
 
 ## Project Summary
 - This repo is a static browser app with no build step and no framework.
@@ -24,6 +24,28 @@ Last updated: February 28, 2026
 - `index.html`
   - Main UI shell.
   - Links `manifest.webmanifest`.
+  - Current top-level UI layout:
+    - `DUAL INPUT` overlay banner outside the main card
+    - heading and focus warning at the top of the card
+    - first compact row contains:
+      - `#serialBaudRate`
+      - `#serialConnect`
+      - `#serialDisconnect`
+      - `#txSchedulerState`
+    - serial status line contains:
+      - `#serialState`
+      - `#serialLoadState`
+      - `#adapterVersion`
+    - gamepad status line contains:
+      - `#gamepadState`
+      - `#gamepadPollingState`
+    - focus/live line contains:
+      - `#pageFocusState`
+      - `#gamepadLiveDisplay`
+    - RX line combines:
+      - `#rxConfig`
+      - `#lastRxFrame`
+    - build display is at the bottom of the card
   - Loads scripts in this order:
     1. `config.js`
     2. `globals.js`
@@ -165,6 +187,9 @@ Last updated: February 28, 2026
 
 ## Control Mode Selection
 - `index.html` exposes a `#controlMode` selector.
+- Visible option labels are:
+  - `Auto` (`value="state"`)
+  - `Manual` (`value="raw"`)
 - `state`
   - Uses `window.ControlLogic` from `control-logic.js`.
   - Preserves the existing `switch (AS_STATE)` behavior.
@@ -377,7 +402,7 @@ Last updated: February 28, 2026
   - `hidden`
 - If the page is not focused or visible:
   - the page background changes from white to grey
-  - the `Ensure page has focus...` heading is highlighted yellow
+  - the `NOTE: Some gamepads require page focus...` heading is highlighted yellow
 - `DUAL INPUT` Easter egg:
   - shows as a large overlay banner
   - triggers when axes `0` and `2` are both above `0.2` in magnitude and opposite in sign
@@ -422,14 +447,15 @@ Last updated: February 28, 2026
     - `1000000`
     - `2000000`
 - `#controlMode`
-  - Selects `switch(AS_STATE)` or `raw manual`.
+  - Selects `Auto` (`switch(AS_STATE)`) or `Manual` (`raw manual`).
 - `#serialConnect`
 - `#serialDisconnect`
 
 ### Build Display
 - `#appVersion`
+- Rendered at the bottom of the main card.
 - Set from `app.js` constant:
-  - `APP_BUILD_VERSION = "2026-02-28.6"`
+  - `APP_BUILD_VERSION = "2026-02-28.7"`
 - Intended as a visible deployment/build marker so stale hosted shells are obvious.
 
 ### Serial Console
@@ -555,7 +581,7 @@ Last updated: February 28, 2026
     - `icons/icon-192.svg`
     - `icons/icon-512.svg`
 - `sw.js` cache name:
-  - `gamepad-can-bridge-shell-v3`
+  - `gamepad-can-bridge-shell-v4`
 - `sw.js` behavior:
   - precaches the app shell and icons
   - network-first for navigations
@@ -587,24 +613,25 @@ Last updated: February 28, 2026
    - decoded globals update in `#canDebugData`
 10. Confirm `rxFrameStats.countsById` grows dynamically from real bus traffic and resets after reconnect.
 11. Move the gamepad and confirm:
-    - `GAMEPAD_X_AXIS` and `GAMEPAD_Y_AXIS` update in `#canDebugData`
+    - `GAMEPAD_X_AXIS`, `GAMEPAD_X2_AXIS`, and `GAMEPAD_Y_AXIS` update in `#canDebugData`
     - manual `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` change as expected
     - `#gamepadLiveDisplay` updates even when `Debug globals` is closed
 12. Verify page focus behavior:
     - `#pageFocusState` shows `focused` when the app window is active
     - `#pageFocusState` changes to `visible, unfocused` or `hidden` when focus is lost
-    - gamepad reliability should be evaluated only while `#pageFocusState` is `focused`
+    - focused is the recommended baseline for reliability checks; some gamepads may still report while unfocused
 13. Install through the browser UI and verify the app opens standalone.
 14. After one online load, test offline shell availability by disconnecting network and reloading.
 
 ## Constraints / Notes
 - WebSerial requires a secure context and a user gesture.
-- Gamepad input is most reliable only while the app page is focused and visible.
-- If the page is unfocused or hidden, browser throttling can make Gamepad API polling inconsistent.
+- Focus improves gamepad reliability, but dependence on focus varies by controller and browser.
+- Some gamepads continue reporting while unfocused; others may stop or become inconsistent when the page is unfocused or hidden.
 - TX only emits standard 11-bit SLCAN frames.
 - RX parsing supports both standard and extended SLCAN receive frames.
 - The service worker provides offline shell behavior, not guaranteed offline hardware access.
 - The code intentionally uses explicit globals for fast iteration and clarity.
+
 
 
 
