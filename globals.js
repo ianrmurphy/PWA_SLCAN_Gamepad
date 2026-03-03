@@ -9,6 +9,7 @@ window.AppGlobals = {
   GO_SIGNAL: false,
   AS_STATE: 0,
   AMI_STATE: 0,
+  AUTO_SUB_MODE: "speed",
   GAMEPAD_BUTTON_0_PRESSED: false,
   GAMEPAD_BUTTON_1_PRESSED: false,
   GAMEPAD_BUTTON_2_PRESSED: false,
@@ -67,6 +68,7 @@ window.AppGlobals = {
   controlLogicData: {
     activeCase: "AS_OFF",
     statusText: "Waiting for RX state",
+    autoSubMode: "speed",
     allowTorque: false,
     readyToDrive: false,
     finishRequested: false,

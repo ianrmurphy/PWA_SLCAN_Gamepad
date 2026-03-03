@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const APP_BUILD_VERSION = "2026-02-28.7";
+const APP_BUILD_VERSION = "2026-03-03.3";
 const DEFAULT_SERIAL_BAUD_RATE = 2000000;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;
@@ -15,6 +15,7 @@ const MAX_SERIAL_LOG_LINES = 200;
 const SERIAL_RX_POLL_INTERVAL_MS = 20;
 const SERIAL_LOAD_SAMPLE_MS = 1000;
 const DEFAULT_CONTROL_MODE = "state";
+const DEFAULT_AUTO_SUB_MODE = "speed";
 
 const DEFAULT_PERIODIC_FRAMES = [
   { id: 0x510, intervalMs: 20 },
@@ -140,6 +141,38 @@ function setAsStateDisplay(text, className) {
 function getSelectedControlMode() {
   const selectedValue = $("controlMode")?.value;
   return selectedValue === "raw" ? "raw" : DEFAULT_CONTROL_MODE;
+}
+
+function getSelectedAutoSubMode() {
+  const selectedValue = $("autoSubMode")?.value;
+  return selectedValue === "torque" ? "torque" : DEFAULT_AUTO_SUB_MODE;
+}
+
+function syncAutoSubModeSelection() {
+  const autoSubModeSelect = $("autoSubMode");
+  const selectedAutoSubMode = getSelectedAutoSubMode();
+
+  if (autoSubModeSelect) {
+    autoSubModeSelect.value = selectedAutoSubMode;
+    autoSubModeSelect.disabled = getSelectedControlMode() !== DEFAULT_CONTROL_MODE;
+  }
+
+  if (window.AppGlobals) {
+    window.AppGlobals.AUTO_SUB_MODE = selectedAutoSubMode;
+  }
+}
+
+function resetAutoSubModeToDefault(refreshIfAuto = false) {
+  const autoSubModeSelect = $("autoSubMode");
+  if (autoSubModeSelect) {
+    autoSubModeSelect.value = DEFAULT_AUTO_SUB_MODE;
+  }
+
+  syncAutoSubModeSelection();
+
+  if (refreshIfAuto && controlLogic && getSelectedControlMode() === DEFAULT_CONTROL_MODE) {
+    refreshControlLogicDisplay();
+  }
 }
 
 function applyControlLogicSnapshot(snapshot) {
@@ -1121,6 +1154,8 @@ async function connectSerial() {
     return;
   }
 
+  resetAutoSubModeToDefault(true);
+
   try {
     setSerialState("requesting port...", "warn");
     const port = await navigator.serial.requestPort();
@@ -1355,15 +1390,29 @@ function setupConfig() {
     setRxConfigState("CAN encoding unavailable", "warn");
   }
 
+  syncAutoSubModeSelection();
   createControlLogicForMode(getSelectedControlMode());
 }
 
 function setupControlModeSwitch() {
   const controlModeSelect = $("controlMode");
+  const autoSubModeSelect = $("autoSubMode");
   if (!controlModeSelect) return;
 
   controlModeSelect.value = getSelectedControlMode();
+  if (autoSubModeSelect) {
+    autoSubModeSelect.value = getSelectedAutoSubMode();
+    autoSubModeSelect.addEventListener("change", () => {
+      syncAutoSubModeSelection();
+      if (getSelectedControlMode() === DEFAULT_CONTROL_MODE) {
+        refreshControlLogicDisplay();
+      }
+    });
+  }
+
+  syncAutoSubModeSelection();
   controlModeSelect.addEventListener("change", () => {
+    resetAutoSubModeToDefault();
     createControlLogicForMode(getSelectedControlMode());
   });
 }

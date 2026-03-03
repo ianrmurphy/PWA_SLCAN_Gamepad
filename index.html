@@ -84,7 +84,7 @@
     <div id="dualInputBanner" aria-hidden="true"><span>DUAL INPUT</span></div>
     <div class="card">
       <h1>FS-AI ADS-DV Gamepad to SLCAN Bridge</h1>
-      <h2 id="focusWarning">NOTE: Some gamepads require page focus to capture events.</h2>
+      <h2 id="focusWarning">NOTE: Gamepads require page visbility and sometimes focus to capture events.</h2>
 
       <div class="row compact-row">
         <label class="muted" for="serialBaudRate">Serial baud:</label>
@@ -136,6 +136,11 @@
           <option value="state" selected>Auto</option>
           <option value="raw">Manual</option>
         </select>
+        <label class="muted" for="autoSubMode">Auto sub-mode:</label>
+        <select id="autoSubMode" class="compact-select">
+          <option value="speed" selected>Speed</option>
+          <option value="torque">Torque</option>
+        </select>
       </div>
 
       <p class="muted">
@@ -144,25 +149,25 @@
       </p>
 
       <p class="muted">
-        MISSION_STATUS: <code id="missionStatusDisplay">loading...</code>
+        MISSION_STATUS (1): <code id="missionStatusDisplay">loading...</code>
+      </p>
+      <p class="muted">
+        DIRECTION_REQUEST (2): <code id="directionRequestDisplay">loading...</code>
+      </p>
+      <p class="muted">
+        TORQUE_REQUEST (3): <code id="torqueRequestDisplay">loading...</code>
+      </p>
+      <p class="muted">
+        ESTOP_REQUEST (4): <code id="estopRequestDisplay">loading...</code>
       </p>
       <p class="muted">
         STEER_REQUEST: <code id="steerRequestDisplay">loading...</code>
-      </p>
-      <p class="muted">
-        TORQUE_REQUEST: <code id="torqueRequestDisplay">loading...</code>
       </p>
       <p class="muted">
         SPEED_REQUEST: <code id="speedRequestDisplay">loading...</code>
       </p>
       <p class="muted">
         BRAKE_REQUEST: <code id="brakeRequestDisplay">loading...</code>
-      </p>
-      <p class="muted">
-        DIRECTION_REQUEST: <code id="directionRequestDisplay">loading...</code>
-      </p>
-      <p class="muted">
-        ESTOP_REQUEST: <code id="estopRequestDisplay">loading...</code>
       </p>
 
       <details id="serialConsolePanel">
@@ -188,4 +193,3 @@
     <script src="app.js"></script>
   </body>
 </html>
-

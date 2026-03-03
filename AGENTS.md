@@ -1,6 +1,6 @@
 # Gamepad to CAN Bridge Agent Context
 
-Last updated: March 1, 2026
+Last updated: March 3, 2026
 
 ## Project Summary
 - This repo is a static browser app with no build step and no framework.
@@ -15,6 +15,7 @@ Last updated: March 1, 2026
   - receives all CAN traffic the adapter forwards
   - decodes `VCU2AI_Status_ID` (`0x520`) into control globals
   - supports selectable control modes: `switch (AS_STATE)` or raw manual
+  - in `Auto`, supports selectable default-drive sub-modes: `speed` or `torque`
   - exposes lightweight live gamepad, debug, and serial-traffic views
   - shows a `DUAL INPUT` overlay when joystick axes `0` and `2` oppose each other
   - makes focus loss visually obvious by greying the page background and highlighting the focus warning
@@ -45,6 +46,15 @@ Last updated: March 1, 2026
     - RX line combines:
       - `#rxConfig`
       - `#lastRxFrame`
+    - control row contains:
+      - `#controlMode`
+      - `#autoSubMode`
+    - main output list starts with:
+      - `MISSION_STATUS (1)`
+      - `DIRECTION_REQUEST (2)`
+      - `TORQUE_REQUEST (3)`
+      - `ESTOP_REQUEST (4)`
+      - then `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST`
     - build display is at the bottom of the card
   - Loads scripts in this order:
     1. `config.js`
@@ -125,6 +135,7 @@ Last updated: March 1, 2026
 - `GO_SIGNAL`
 - `AS_STATE`
 - `AMI_STATE`
+- `AUTO_SUB_MODE`
 
 ### Gamepad Input Globals
 - `GAMEPAD_BUTTON_0_PRESSED`
@@ -178,6 +189,7 @@ Last updated: March 1, 2026
   - Fields:
     - `activeCase`
     - `statusText`
+    - `autoSubMode`
     - `allowTorque`
     - `readyToDrive`
     - `finishRequested`
@@ -187,24 +199,33 @@ Last updated: March 1, 2026
 
 ## Control Mode Selection
 - `index.html` exposes a `#controlMode` selector.
+- `index.html` also exposes an `#autoSubMode` selector for Auto mode.
 - Visible option labels are:
   - `Auto` (`value="state"`)
   - `Manual` (`value="raw"`)
+- Auto sub-mode option labels are:
+  - `Speed` (`value="speed"`)
+  - `Torque` (`value="torque"`)
 - `state`
   - Uses `window.ControlLogic` from `control-logic.js`.
   - Preserves the existing `switch (AS_STATE)` behavior.
+  - Uses `window.AppGlobals.AUTO_SUB_MODE` for the default `AS_DRIVING` / default `AMI_STATE` branch.
 - `raw`
   - Uses `window.ControlRawLogic` from `control-raw.js`.
   - Applies direct manual gamepad control without `switch (AS_STATE)`.
   - Latching button controls:
     - button 0 cycles `MISSION_STATUS` through `0 -> 1 -> 2 -> 3 -> 0`
     - button 1 toggles `DIRECTION_REQUEST` between `0` and `1`
-    - button 2 toggles `ESTOP_REQUEST` between `0` and `1`
-    - button 3 toggles `TORQUE_REQUEST` between `0` and `1950`
+    - button 2 toggles `TORQUE_REQUEST` between `0` and `1950`
+    - button 3 toggles `ESTOP_REQUEST` between `0` and `1`
   - These button actions are rising-edge triggered and do not retrigger while held.
   - The latching is driven from explicit button press counters incremented in `processGamepads()`.
   - `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` remain axis-driven with the existing linear mapping and deadband.
-- `app.js` can switch modes at runtime without a page reload.
+- `#autoSubMode` is only enabled while `Auto` is selected.
+- `#autoSubMode` resets to `Speed` when:
+  - the control mode selector changes
+  - a new serial connection is started
+- `app.js` can switch modes and Auto sub-modes at runtime without a page reload.
 
 ## CAN Protocol Context
 
@@ -308,7 +329,7 @@ Last updated: March 1, 2026
 - Branches by `AMI_STATE`.
 
 #### Default `AMI_STATE`
-- Manual driving mode.
+- Auto default driving mode.
 - `MISSION_STATUS = 3` while gamepad button 0 is pressed, else `1`.
 - `STEER_REQUEST` from the stronger of raw gamepad X axes `0` and `2`:
   - raw browser convention:
@@ -319,26 +340,44 @@ Last updated: March 1, 2026
     - scales linearly to full range
     - control logic intentionally inverts sign
     - full scale is `-steerMax..steerMax` (current default `-300..300`)
-- `SPEED_REQUEST` from raw gamepad Y axis:
-  - raw browser convention:
-    - positive Y = down
-  - central deadband:
-    - `|GAMEPAD_Y_AXIS| <= 0.05` contributes `0`
-  - up command:
-    - uses `-GAMEPAD_Y_AXIS`
-    - scales linearly from `0` to `speedMax` (current default `4000`)
-    - only upward travel contributes
-- `BRAKE_REQUEST` from raw gamepad Y axis:
-  - central deadband:
-    - `|GAMEPAD_Y_AXIS| <= 0.05` contributes `0`
-  - down command:
-    - uses `+GAMEPAD_Y_AXIS`
-    - scales linearly from `0` to `brakeMax` (current default `100`)
-    - only downward travel contributes
-- Fixed values:
-  - `TORQUE_REQUEST = 1950`
-  - `DIRECTION_REQUEST = 1`
-  - `ESTOP_REQUEST = 0`
+- `AUTO_SUB_MODE = "speed"`
+  - `SPEED_REQUEST` from raw gamepad Y axis:
+    - raw browser convention:
+      - positive Y = down
+    - central deadband:
+      - `|GAMEPAD_Y_AXIS| <= 0.05` contributes `0`
+    - up command:
+      - uses `-GAMEPAD_Y_AXIS`
+      - scales linearly from `0` to `speedMax` (current default `4000`)
+      - only upward travel contributes
+  - `BRAKE_REQUEST` from raw gamepad Y axis:
+    - central deadband:
+      - `|GAMEPAD_Y_AXIS| <= 0.05` contributes `0`
+    - down command:
+      - uses `+GAMEPAD_Y_AXIS`
+      - scales linearly from `0` to `brakeMax` (current default `100`)
+      - only downward travel contributes
+  - Fixed values:
+    - `TORQUE_REQUEST = 1950`
+    - `DIRECTION_REQUEST = 1`
+    - `ESTOP_REQUEST = 0`
+- `AUTO_SUB_MODE = "torque"`
+  - Uses the same raw Y axis and the same `0.05` deadband, but treats the surviving signed value as torque demand.
+  - If the normalized Y command is `0`:
+    - `SPEED_REQUEST = 0`
+    - `TORQUE_REQUEST = 0`
+    - `BRAKE_REQUEST = 0`
+  - If the normalized Y command is negative (stick up):
+    - `SPEED_REQUEST = 4000`
+    - `TORQUE_REQUEST` scales from `0` to `1950` using the absolute Y magnitude
+    - `BRAKE_REQUEST = 0`
+  - If the normalized Y command is positive (stick down):
+    - `SPEED_REQUEST = 0`
+    - `TORQUE_REQUEST` still scales from `0` to `1950` using the absolute Y magnitude
+    - `BRAKE_REQUEST = 0`
+  - Fixed values:
+    - `DIRECTION_REQUEST = 1`
+    - `ESTOP_REQUEST = 0`
 
 #### `AMI_STATE = 5` (`Static A`)
 - Time-driven sequence based on `mission_timer`.
@@ -402,7 +441,7 @@ Last updated: March 1, 2026
   - `hidden`
 - If the page is not focused or visible:
   - the page background changes from white to grey
-  - the `NOTE: Some gamepads require page focus...` heading is highlighted yellow
+  - the focus warning heading is highlighted yellow
 - `DUAL INPUT` Easter egg:
   - shows as a large overlay banner
   - triggers when axes `0` and `2` are both above `0.2` in magnitude and opposite in sign
@@ -448,6 +487,11 @@ Last updated: March 1, 2026
     - `2000000`
 - `#controlMode`
   - Selects `Auto` (`switch(AS_STATE)`) or `Manual` (`raw manual`).
+- `#autoSubMode`
+  - Selects Auto default-drive behavior:
+    - `Speed`
+    - `Torque`
+  - Disabled while `Manual` is selected.
 - `#serialConnect`
 - `#serialDisconnect`
 
@@ -455,7 +499,7 @@ Last updated: March 1, 2026
 - `#appVersion`
 - Rendered at the bottom of the main card.
 - Set from `app.js` constant:
-  - `APP_BUILD_VERSION = "2026-02-28.7"`
+  - `APP_BUILD_VERSION = "2026-03-03.3"`
 - Intended as a visible deployment/build marker so stale hosted shells are obvious.
 
 ### Serial Console
@@ -493,19 +537,20 @@ Last updated: March 1, 2026
 
 ### Main Output Display
 - Separate always-visible lines are shown for:
-  - `MISSION_STATUS`
+  - `MISSION_STATUS (1)`
+  - `DIRECTION_REQUEST (2)`
+  - `TORQUE_REQUEST (3)`
+  - `ESTOP_REQUEST (4)`
   - `STEER_REQUEST`
-  - `TORQUE_REQUEST`
   - `SPEED_REQUEST`
   - `BRAKE_REQUEST`
-  - `DIRECTION_REQUEST`
-  - `ESTOP_REQUEST`
 - `mission_timer` still exists in logic, but is no longer shown in the separate output list.
 
 ## Serial / SLCAN Behavior
 - WebSerial port open baud rate:
   - selected from `#serialBaudRate`
   - current code fallback default is `2000000`
+- On connect, the Auto sub-mode selector is reset to `Speed` before the port request begins.
 - On connect:
   1. `navigator.serial.requestPort()`
   2. `port.open({ baudRate: selectedSerialBaud })`
@@ -616,12 +661,16 @@ Last updated: March 1, 2026
     - `GAMEPAD_X_AXIS`, `GAMEPAD_X2_AXIS`, and `GAMEPAD_Y_AXIS` update in `#canDebugData`
     - manual `STEER_REQUEST`, `SPEED_REQUEST`, and `BRAKE_REQUEST` change as expected
     - `#gamepadLiveDisplay` updates even when `Debug globals` is closed
-12. Verify page focus behavior:
+12. In `Auto`, verify `#autoSubMode`:
+    - defaults to `Speed`
+    - is enabled only while `Auto` is selected
+    - changes the default `AS_DRIVING` / default `AMI_STATE` response between speed-style and torque-style Y-axis handling without a page reload
+13. Verify page focus behavior:
     - `#pageFocusState` shows `focused` when the app window is active
     - `#pageFocusState` changes to `visible, unfocused` or `hidden` when focus is lost
     - focused is the recommended baseline for reliability checks; some gamepads may still report while unfocused
-13. Install through the browser UI and verify the app opens standalone.
-14. After one online load, test offline shell availability by disconnecting network and reloading.
+14. Install through the browser UI and verify the app opens standalone.
+15. After one online load, test offline shell availability by disconnecting network and reloading.
 
 ## Constraints / Notes
 - WebSerial requires a secure context and a user gesture.

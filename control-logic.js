@@ -7,6 +7,9 @@
   const MANUAL_STEER_MAX = Math.max(0, Number(manualControlConfig.steerMax) || 300);
   const MANUAL_SPEED_MAX = Math.max(0, Number(manualControlConfig.speedMax) || 4000);
   const MANUAL_BRAKE_MAX = Math.max(0, Number(manualControlConfig.brakeMax) || 100);
+  const AUTO_SPEED_MODE_TORQUE_REQUEST = 1950;
+  const AUTO_TORQUE_MODE_SPEED_REQUEST = 4000;
+  const AUTO_TORQUE_MODE_TORQUE_MAX = 1950;
 
   function setOutputs(missionStatus, steer, speed, torque, direction, estop, brake = 0) {
     appGlobals.MISSION_STATUS = missionStatus;
@@ -50,11 +53,43 @@
     return Math.round(normalizedBrake * MANUAL_BRAKE_MAX);
   }
 
+  function getAutoSubMode() {
+    return appGlobals.AUTO_SUB_MODE === "torque" ? "torque" : "speed";
+  }
+
+  function getAutoDefaultDriveOutputs(autoSubMode) {
+    if (autoSubMode !== "torque") {
+      return {
+        speed: getManualSpeedRequest(),
+        torque: AUTO_SPEED_MODE_TORQUE_REQUEST,
+        brake: getManualBrakeRequest(),
+      };
+    }
+
+    const normalizedY = normalizeAxisWithDeadband(appGlobals.GAMEPAD_Y_AXIS);
+    if (normalizedY === 0) {
+      return {
+        speed: 0,
+        torque: 0,
+        brake: 0,
+      };
+    }
+
+    return {
+      speed: normalizedY < 0 ? AUTO_TORQUE_MODE_SPEED_REQUEST : 0,
+      torque: Math.round(Math.abs(normalizedY) * AUTO_TORQUE_MODE_TORQUE_MAX),
+      brake: 0,
+    };
+  }
+
   function evaluateAsState() {
+    const autoSubMode = getAutoSubMode();
+
     txData.asState = appGlobals.AS_STATE;
 
     controlLogicData.activeCase = `AS_${appGlobals.AS_STATE}`;
     controlLogicData.statusText = "Unhandled AS_STATE";
+    controlLogicData.autoSubMode = autoSubMode;
     controlLogicData.allowTorque = false;
     controlLogicData.readyToDrive = false;
     controlLogicData.finishRequested = false;
@@ -90,21 +125,23 @@
         controlLogicData.activeCase = "AS_DRIVING";
 
         switch (appGlobals.AMI_STATE) {
-          default:
+          default: {
+            const autoDriveOutputs = getAutoDefaultDriveOutputs(autoSubMode);
             controlLogicData.activeCase = "AS_DRIVING_DEFAULT";
             controlLogicData.statusText = appGlobals.GAMEPAD_BUTTON_0_PRESSED
-              ? "Manual mission stop request"
-              : "Manual driving request";
+              ? `Auto ${autoSubMode}: mission stop request`
+              : `Auto ${autoSubMode}: driving request`;
             setOutputs(
               appGlobals.GAMEPAD_BUTTON_0_PRESSED ? 3 : 1,
               getManualSteerRequest(),
-              getManualSpeedRequest(),
-              1950,
+              autoDriveOutputs.speed,
+              autoDriveOutputs.torque,
               1,
               0,
-              getManualBrakeRequest()
+              autoDriveOutputs.brake
             );
             break;
+          }
 
           case 0x5:
             controlLogicData.activeCase = "AS_DRIVING_STATIC_A";
@@ -204,6 +241,7 @@
       amiState: appGlobals.AMI_STATE,
       handshake: appGlobals.HANDSHAKE,
       goSignal: appGlobals.GO_SIGNAL,
+      autoSubMode,
       missionStatus: appGlobals.MISSION_STATUS,
       missionTimer: appGlobals.mission_timer,
       activeCase: controlLogicData.activeCase,

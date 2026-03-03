@@ -123,14 +123,14 @@
       previousPressCounts.button2,
       appGlobals.GAMEPAD_BUTTON_2_PRESS_COUNT,
       () => {
-        appGlobals.ESTOP_REQUEST = toggleZeroOne(appGlobals.ESTOP_REQUEST);
+        appGlobals.TORQUE_REQUEST = toggleTorqueRequest(appGlobals.TORQUE_REQUEST);
       }
     );
     previousPressCounts.button3 = applyPressDelta(
       previousPressCounts.button3,
       appGlobals.GAMEPAD_BUTTON_3_PRESS_COUNT,
       () => {
-        appGlobals.TORQUE_REQUEST = toggleTorqueRequest(appGlobals.TORQUE_REQUEST);
+        appGlobals.ESTOP_REQUEST = toggleZeroOne(appGlobals.ESTOP_REQUEST);
       }
     );
 
