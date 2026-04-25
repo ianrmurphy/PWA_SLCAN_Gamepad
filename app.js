@@ -1,6 +1,6 @@
 const $ = (id) => document.getElementById(id);
 
-const APP_BUILD_VERSION = "2026-03-03.3";
+const APP_BUILD_VERSION = "2026-04-25.1";
 const DEFAULT_SERIAL_BAUD_RATE = 2000000;
 const AXIS_EPSILON = 0.04;
 const BUTTON_EPSILON = 0.02;

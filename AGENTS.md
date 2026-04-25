@@ -1,6 +1,6 @@
 # Gamepad to CAN Bridge Agent Context
 
-Last updated: March 3, 2026
+Last updated: April 25, 2026
 
 ## Project Summary
 - This repo is a static browser app with no build step and no framework.
@@ -122,7 +122,7 @@ Last updated: March 3, 2026
 - SLCAN CAN bitrate:
   - `S6` (`500 kbps`)
 - Manual control full scale:
-  - `steerMax = 300`
+  - `steerMax = 320`
   - `speedMax = 4000`
   - `brakeMax = 100`
 
@@ -339,7 +339,7 @@ Last updated: March 3, 2026
   - outside the deadband:
     - scales linearly to full range
     - control logic intentionally inverts sign
-    - full scale is `-steerMax..steerMax` (current default `-300..300`)
+    - full scale is `-steerMax..steerMax` (current default `-320..320`)
 - `AUTO_SUB_MODE = "speed"`
   - `SPEED_REQUEST` from raw gamepad Y axis:
     - raw browser convention:
@@ -499,7 +499,7 @@ Last updated: March 3, 2026
 - `#appVersion`
 - Rendered at the bottom of the main card.
 - Set from `app.js` constant:
-  - `APP_BUILD_VERSION = "2026-03-03.3"`
+  - `APP_BUILD_VERSION = "2026-04-25.1"`
 - Intended as a visible deployment/build marker so stale hosted shells are obvious.
 
 ### Serial Console
@@ -626,7 +626,7 @@ Last updated: March 3, 2026
     - `icons/icon-192.svg`
     - `icons/icon-512.svg`
 - `sw.js` cache name:
-  - `gamepad-can-bridge-shell-v4`
+  - `gamepad-can-bridge-shell-v5`
 - `sw.js` behavior:
   - precaches the app shell and icons
   - network-first for navigations

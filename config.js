@@ -23,7 +23,7 @@ window.APP_CONFIG = {
 
   manualControl: {
     // Full-scale output limits for joystick-driven manual mode.
-    steerMax: 300,
+    steerMax: 320,
     speedMax: 4000,
     brakeMax: 100,
   },

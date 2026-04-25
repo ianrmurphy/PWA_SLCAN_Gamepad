@@ -1,4 +1,4 @@
-const CACHE_NAME = "gamepad-can-bridge-shell-v4";
+const CACHE_NAME = "gamepad-can-bridge-shell-v5";
 const CACHE_PREFIX = "gamepad-can-bridge-shell-";
 const PRECACHE_URLS = [
   "./",

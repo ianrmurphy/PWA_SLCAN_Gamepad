@@ -4,7 +4,7 @@
   const controlLogicData = appGlobals.controlLogicData;
   const manualControlConfig = window.APP_CONFIG?.manualControl ?? {};
   const MANUAL_AXIS_DEADBAND = 0.05;
-  const MANUAL_STEER_MAX = Math.max(0, Number(manualControlConfig.steerMax) || 300);
+  const MANUAL_STEER_MAX = Math.max(0, Number(manualControlConfig.steerMax) || 320);
   const MANUAL_SPEED_MAX = Math.max(0, Number(manualControlConfig.speedMax) || 4000);
   const MANUAL_BRAKE_MAX = Math.max(0, Number(manualControlConfig.brakeMax) || 100);
   const AUTO_SPEED_MODE_TORQUE_REQUEST = 1950;
